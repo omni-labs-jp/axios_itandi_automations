@@ -93,14 +93,17 @@ func (s *DatastoreStore) key(id string) *datastore.Key {
 //     サイズ上限の節約）
 //   - タグ名は README のスキーマ表と一致させる
 type entity struct {
-	Status      string     `datastore:"status"`
-	Attempts    int        `datastore:"attempts"`
-	DetectedAt  *time.Time `datastore:"detectedAt,omitempty"`
-	SentAt      *time.Time `datastore:"sentAt,omitempty"`
-	NextRetryAt *time.Time `datastore:"nextRetryAt,omitempty"`
-	LastError   string     `datastore:"lastError,noindex,omitempty"`
-	JobID       string     `datastore:"herokuJobId,noindex,omitempty"`
-	UpdatedAt   *time.Time `datastore:"updatedAt,omitempty"`
+	// 物件名・部屋番号はログ表示専用なので検索対象にしない（noindex）。
+	PropertyName string     `datastore:"propertyName,noindex,omitempty"`
+	RoomNumber   string     `datastore:"roomNumber,noindex,omitempty"`
+	Status       string     `datastore:"status"`
+	Attempts     int        `datastore:"attempts"`
+	DetectedAt   *time.Time `datastore:"detectedAt,omitempty"`
+	SentAt       *time.Time `datastore:"sentAt,omitempty"`
+	NextRetryAt  *time.Time `datastore:"nextRetryAt,omitempty"`
+	LastError    string     `datastore:"lastError,noindex,omitempty"`
+	JobID        string     `datastore:"herokuJobId,noindex,omitempty"`
+	UpdatedAt    *time.Time `datastore:"updatedAt,omitempty"`
 }
 
 func timePtr(t time.Time) *time.Time {
@@ -120,28 +123,32 @@ func timeVal(p *time.Time) time.Time {
 
 func toEntity(e Entry) *entity {
 	return &entity{
-		Status:      string(e.Status),
-		Attempts:    e.Attempts,
-		DetectedAt:  timePtr(e.DetectedAt),
-		SentAt:      timePtr(e.SentAt),
-		NextRetryAt: timePtr(e.NextRetryAt),
-		LastError:   e.LastError,
-		JobID:       e.JobID,
-		UpdatedAt:   timePtr(e.UpdatedAt),
+		PropertyName: e.PropertyName,
+		RoomNumber:   e.RoomNumber,
+		Status:       string(e.Status),
+		Attempts:     e.Attempts,
+		DetectedAt:   timePtr(e.DetectedAt),
+		SentAt:       timePtr(e.SentAt),
+		NextRetryAt:  timePtr(e.NextRetryAt),
+		LastError:    e.LastError,
+		JobID:        e.JobID,
+		UpdatedAt:    timePtr(e.UpdatedAt),
 	}
 }
 
 func fromEntity(id string, ent *entity) Entry {
 	return Entry{
-		ID:          id,
-		Status:      Status(ent.Status),
-		Attempts:    ent.Attempts,
-		DetectedAt:  timeVal(ent.DetectedAt),
-		SentAt:      timeVal(ent.SentAt),
-		NextRetryAt: timeVal(ent.NextRetryAt),
-		LastError:   ent.LastError,
-		JobID:       ent.JobID,
-		UpdatedAt:   timeVal(ent.UpdatedAt),
+		ID:           id,
+		PropertyName: ent.PropertyName,
+		RoomNumber:   ent.RoomNumber,
+		Status:       Status(ent.Status),
+		Attempts:     ent.Attempts,
+		DetectedAt:   timeVal(ent.DetectedAt),
+		SentAt:       timeVal(ent.SentAt),
+		NextRetryAt:  timeVal(ent.NextRetryAt),
+		LastError:    ent.LastError,
+		JobID:        ent.JobID,
+		UpdatedAt:    timeVal(ent.UpdatedAt),
 	}
 }
 

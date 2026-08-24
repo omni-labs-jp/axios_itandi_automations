@@ -32,15 +32,17 @@ func RunStoreTests(t *testing.T, newStore Factory) {
 		s := newStore(t)
 		ctx := context.Background()
 		want := ledger.Entry{
-			ID:          "1234567",
-			Status:      ledger.StatusFailed,
-			Attempts:    2,
-			DetectedAt:  base,
-			SentAt:      base.Add(time.Minute),
-			NextRetryAt: base.Add(time.Hour),
-			LastError:   "HTTP 500 body=boom",
-			JobID:       "contract-1234567-1756000000000",
-			UpdatedAt:   base.Add(time.Minute),
+			ID:           "1234567",
+			PropertyName: "アーバン北新宿",
+			RoomNumber:   "302",
+			Status:       ledger.StatusFailed,
+			Attempts:     2,
+			DetectedAt:   base,
+			SentAt:       base.Add(time.Minute),
+			NextRetryAt:  base.Add(time.Hour),
+			LastError:    "HTTP 500 body=boom",
+			JobID:        "contract-1234567-1756000000000",
+			UpdatedAt:    base.Add(time.Minute),
 		}
 		if err := s.Put(ctx, want); err != nil {
 			t.Fatalf("Put: %v", err)
@@ -203,6 +205,9 @@ func ids(entries []ledger.Entry) []string {
 func assertEntryEqual(t *testing.T, got, want ledger.Entry) {
 	t.Helper()
 	if got.ID != want.ID || got.Status != want.Status || got.Attempts != want.Attempts {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+	if got.PropertyName != want.PropertyName || got.RoomNumber != want.RoomNumber {
 		t.Errorf("got %+v, want %+v", got, want)
 	}
 	if got.LastError != want.LastError || got.JobID != want.JobID {

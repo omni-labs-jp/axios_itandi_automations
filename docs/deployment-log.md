@@ -13,9 +13,11 @@
 | 5 | DRY_RUN での動作検証 | ✅ 完了（全経路の疎通確認済み） |
 | 6 | DRY_RUN の副作用修正 | ✅ 完了（PR #3） |
 | 7 | Heroku 側 ITANDI Webhook の二重起動確認 | ✅ 確認済み（冪等なので問題なし） |
-| 8 | 本稼働（`DRY_RUN=false` + タグ） | 🔄 `DRY_RUN=false` を PR 中。タグ待ち |
-| 9 | 実送信の手動確認（1件） | ⬜ 未対応 |
-| 10 | Cloud Scheduler の再開 | ⬜ 未対応（現在 PAUSED） |
+| 8 | 本稼働（`DRY_RUN=false` + タグ） | ✅ 完了（`contract-kicker-v1.0.0`） |
+| 9 | 実送信の手動確認（1件） | ✅ 完了（Drive への格納も確認済み） |
+| 10 | Cloud Scheduler の再開 | ✅ 完了（20分間隔で稼働中） |
+| 11 | ログへの物件名追加 | 🔄 PR 中 |
+| 12 | エラー通知（Log-based Alert） | ⬜ 未対応 |
 
 ## 構築済みリソース（omni-property-prd）
 
@@ -27,7 +29,7 @@
 | Datastore DB | `automations`（DATASTORE_MODE / asia-northeast1） |
 | 名前空間 / Kind | `axios` / `contract_kicker_entries` |
 | 複合インデックス | 2件（`status`+`detectedAt` / `status`+`nextRetryAt`）READY |
-| Cloud Scheduler | `contract-kicker-schedule`（`*/15 * * * *` / **PAUSED**） |
+| Cloud Scheduler | `contract-kicker-schedule`（`*/20 * * * *` / **ENABLED**） |
 
 ## 事前調査の実測値（2026-08-24）
 
@@ -128,7 +130,23 @@ ITANDI 側の Webhook 設定（「申込データ更新時」→ `/webhook/itand
 （ITANDI に契約検知専用の Webhook 枠は無く、実際に登録されているかは管理画面でしか
 確認できないが、どちらでも安全）
 
+## 稼働開始（2026-08-24）
+
+- `DRY_RUN=false` をデプロイ（タグ `contract-kicker-v1.0.0`）
+- 手動実行で実送信を確認。Drive への格納も確認済み
+- omni-infrastructure タグ `v1.10.0` で Scheduler を有効化。
+  実行間隔は運用側の希望により **20 分**（`*/20 * * * *`）へ変更
+- 稼働開始時点で台帳に `pending` が 10 件。20 分間隔で約 3 時間 20 分かけて消化される
+
 ## 残作業
+
+1. **エラー通知（Log-based Alert）** — `severity>=ERROR` に対するアラートポリシーを
+   omni-infrastructure に追加する。`gaveup` / ITANDI 取得失敗 / 設定不備がすべて
+   ERROR で出るので 1 本で拾える。通知先の決定が必要
+2. **数日間の監視** — `gaveup` が出ていないかを日次で確認
+3. **ITANDI トークンのローテーション** — 実装手順書（Obsidian）に平文で残っているため
+
+## 旧・残作業（完了済み）
 
 1. **タグ `contract-kicker-v1.0.0` を打つ** — `DRY_RUN=false` のイメージがデプロイされる。
    この時点では Scheduler が PAUSED なので自動では動かない

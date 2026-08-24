@@ -61,13 +61,18 @@ func (s Status) Terminal() bool { return s == StatusDone || s == StatusGaveUp }
 // キーに申込 ID をそのまま使うことで、Phase A の存在確認がクエリではなく
 // 直接 get で済む（インデックス不要・強整合）。
 type Entry struct {
-	ID          string
-	Status      Status
-	Attempts    int
-	DetectedAt  time.Time
-	SentAt      time.Time
-	NextRetryAt time.Time
-	LastError   string
+	ID string
+	// PropertyName / RoomNumber は物件名・部屋番号。ログで申込を人が識別できる
+	// ようにするためだけに持つ（検索条件には使わない）。Phase A で申込詳細から
+	// 取得できなかった場合は空になる。
+	PropertyName string
+	RoomNumber   string
+	Status       Status
+	Attempts     int
+	DetectedAt   time.Time
+	SentAt       time.Time
+	NextRetryAt  time.Time
+	LastError    string
 	// JobID は Heroku が受付時に返す jobId（追跡用）。
 	JobID     string
 	UpdatedAt time.Time

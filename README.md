@@ -79,6 +79,8 @@ Axios 分は名前空間とエンティティで分離する。
 
 | フィールド | 型 | 説明 |
 |---|---|---|
+| `propertyName` | string | 物件名（ログで申込を識別するため。検索には使わない） |
+| `roomNumber` | string | 部屋番号 |
 | `status` | string | `pending` / `done` / `failed` / `gaveup` |
 | `attempts` | number | 送信試行回数 |
 | `detectedAt` | timestamp | Phase A で最初に検知した日時 |
@@ -88,6 +90,10 @@ Axios 分は名前空間とエンティティで分離する。
 | `herokuJobId` | string | Heroku が受付時に返す jobId |
 | `updatedAt` | timestamp | 更新日時 |
 
+- `propertyName` / `roomNumber` は Phase A で申込詳細（`GET /entry_heads/{id}`）の
+  `entry_bodies` から取得する。一覧レスポンスには物件名が無いため、新規検知した
+  申込 1 件ごとに 1 回追加で API を呼ぶ。取得に失敗しても WARNING を出して処理は続行する
+  （ログの利便性のための情報で、処理には不要なため）
 - 送信対象から外れるのは `done` と `gaveup`
 - 台帳の意味は「**Heroku が受け付けた**」であって「Drive へ格納された」ではない
   （Heroku 側が非同期）。実際の格納は Heroku 側のログ／エラー通知で担保する

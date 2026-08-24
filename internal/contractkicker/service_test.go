@@ -22,18 +22,45 @@ var now = time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
 
 // ---- test doubles ----
 
-type fakeLister struct {
+type fakeEntryClient struct {
 	entries []itandi.EntryHead
 	err     error
 	calls   []itandi.ListParams
+
+	// details は GetEntryHead が返す申込詳細（物件名の解決用）。
+	details    map[int64]itandi.EntryHead
+	detailErr  error
+	detailCall []int64
 }
 
-func (f *fakeLister) ListEntryHeads(_ context.Context, p itandi.ListParams) ([]itandi.EntryHead, error) {
+func (f *fakeEntryClient) ListEntryHeads(_ context.Context, p itandi.ListParams) ([]itandi.EntryHead, error) {
 	f.calls = append(f.calls, p)
 	if f.err != nil {
 		return nil, f.err
 	}
 	return f.entries, nil
+}
+
+func (f *fakeEntryClient) GetEntryHead(_ context.Context, id int64) (*itandi.EntryHead, error) {
+	f.detailCall = append(f.detailCall, id)
+	if f.detailErr != nil {
+		return nil, f.detailErr
+	}
+	if e, ok := f.details[id]; ok {
+		return &e, nil
+	}
+	return &itandi.EntryHead{ID: id}, nil
+}
+
+// detail は物件名・部屋番号を持つ申込詳細を組み立てる。
+func detail(id int64, name, room string) itandi.EntryHead {
+	return itandi.EntryHead{
+		ID: id,
+		EntryBodies: []itandi.EntryBody{
+			{Type: "text", Name: itandi.BodyRoomName, Text: name},
+			{Type: "text", Name: itandi.BodyRoomNumber, Text: room},
+		},
+	}
 }
 
 type fakeSender struct {
@@ -58,7 +85,7 @@ func acceptedSender() *fakeSender {
 
 type harness struct {
 	svc    *Service
-	lister *fakeLister
+	client *fakeEntryClient
 	store  *ledger.MemoryStore
 	sender *fakeSender
 	clk    *clock.Fake
@@ -82,14 +109,14 @@ func newHarness(t *testing.T, overrides map[string]string) *harness {
 	}
 
 	h := &harness{
-		lister: &fakeLister{},
+		client: &fakeEntryClient{},
 		store:  ledger.NewMemoryStore(),
 		sender: acceptedSender(),
 		clk:    clock.NewFake(now),
 		logs:   &bytes.Buffer{},
 		cfg:    cfg,
 	}
-	h.svc, err = New(cfg, h.lister, h.store, h.sender, Options{
+	h.svc, err = New(cfg, h.client, h.store, h.sender, Options{
 		Clock:  h.clk,
 		Logger: logging.New(h.logs, logging.Options{Level: slog.LevelDebug}),
 	})
@@ -151,19 +178,19 @@ func TestNewRejectsMissingDependencies(t *testing.T) {
 	store := ledger.NewMemoryStore()
 
 	if _, err := New(cfg, nil, store, acceptedSender(), Options{}); err == nil {
-		t.Error("nil lister should be rejected")
+		t.Error("nil entry client should be rejected")
 	}
-	if _, err := New(cfg, &fakeLister{}, nil, acceptedSender(), Options{}); err == nil {
+	if _, err := New(cfg, &fakeEntryClient{}, nil, acceptedSender(), Options{}); err == nil {
 		t.Error("nil store should be rejected")
 	}
-	if _, err := New(cfg, &fakeLister{}, store, nil, Options{}); err == nil {
+	if _, err := New(cfg, &fakeEntryClient{}, store, nil, Options{}); err == nil {
 		t.Error("nil sender should be rejected")
 	}
-	if _, err := New(Config{}, &fakeLister{}, store, acceptedSender(), Options{}); err == nil {
+	if _, err := New(Config{}, &fakeEntryClient{}, store, acceptedSender(), Options{}); err == nil {
 		t.Error("invalid config should be rejected")
 	}
 
-	svc, err := New(cfg, &fakeLister{}, store, acceptedSender(), Options{})
+	svc, err := New(cfg, &fakeEntryClient{}, store, acceptedSender(), Options{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -180,10 +207,10 @@ func TestDetectQueriesLookbackWindowAndTargetStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(h.lister.calls) != 1 {
-		t.Fatalf("lister called %d times, want 1", len(h.lister.calls))
+	if len(h.client.calls) != 1 {
+		t.Fatalf("lister called %d times, want 1", len(h.client.calls))
 	}
-	p := h.lister.calls[0]
+	p := h.client.calls[0]
 	if want := now.Add(-48 * time.Hour); !p.UpdatedSince.Equal(want) {
 		t.Errorf("UpdatedSince = %v, want %v", p.UpdatedSince, want)
 	}
@@ -197,7 +224,7 @@ func TestDetectQueriesLookbackWindowAndTargetStatus(t *testing.T) {
 
 func TestDetectQueuesUnknownEntriesOnly(t *testing.T) {
 	h := newHarness(t, nil)
-	h.lister.entries = []itandi.EntryHead{head(1, 120), head(2, 120), head(3, 120)}
+	h.client.entries = []itandi.EntryHead{head(1, 120), head(2, 120), head(3, 120)}
 	h.store.Seed(ledger.Entry{ID: "2", Status: ledger.StatusDone, DetectedAt: now.Add(-time.Hour)})
 
 	res, err := h.svc.Detect(context.Background())
@@ -226,9 +253,119 @@ func TestDetectQueuesUnknownEntriesOnly(t *testing.T) {
 	}
 }
 
+func TestDetectStoresPropertyName(t *testing.T) {
+	h := newHarness(t, nil)
+	h.client.entries = []itandi.EntryHead{head(5657694, 120)}
+	h.client.details = map[int64]itandi.EntryHead{
+		5657694: detail(5657694, "アーバン北新宿", "302"),
+	}
+
+	if _, err := h.svc.Detect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	got := h.entry(t, "5657694")
+	if got.PropertyName != "アーバン北新宿" || got.RoomNumber != "302" {
+		t.Fatalf("entry = %+v; 物件名と部屋番号を台帳に持つべき", got)
+	}
+	if len(h.client.detailCall) != 1 || h.client.detailCall[0] != 5657694 {
+		t.Errorf("詳細取得の呼び出し = %v, want [5657694]", h.client.detailCall)
+	}
+	if !h.hasLog(t, "INFO", "queued new contract entry") {
+		t.Fatal("検知ログが無い")
+	}
+	// ログにも物件名が乗ること（ID だけでは人が識別できないため）。
+	for _, l := range h.logLines(t) {
+		if l["message"] == "queued new contract entry" {
+			if l["propertyName"] != "アーバン北新宿" || l["roomNumber"] != "302" {
+				t.Fatalf("検知ログに物件名が無い: %v", l)
+			}
+			return
+		}
+	}
+}
+
+func TestDetectDoesNotFetchDetailForKnownEntries(t *testing.T) {
+	h := newHarness(t, nil)
+	h.client.entries = []itandi.EntryHead{head(1, 120)}
+	h.store.Seed(ledger.Entry{ID: "1", Status: ledger.StatusDone, DetectedAt: now})
+
+	if _, err := h.svc.Detect(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// 既知の申込に無駄な API 呼び出しをしない。
+	if len(h.client.detailCall) != 0 {
+		t.Fatalf("詳細取得を %d 回呼んでいる", len(h.client.detailCall))
+	}
+}
+
+func TestDetectQueuesEvenWhenPropertyNameFails(t *testing.T) {
+	h := newHarness(t, nil)
+	h.client.entries = []itandi.EntryHead{head(1, 120)}
+	h.client.detailErr = errors.New("itandi 500")
+
+	res, err := h.svc.Detect(context.Background())
+	if err != nil {
+		t.Fatalf("物件名が取れなくても検知は成功させるべき: %v", err)
+	}
+	if res.NewlyQueued != 1 {
+		t.Fatalf("res = %+v", res)
+	}
+	got := h.entry(t, "1")
+	if got.Status != ledger.StatusPending {
+		t.Fatalf("entry = %+v", got)
+	}
+	if got.PropertyName != "" {
+		t.Errorf("PropertyName = %q, want empty", got.PropertyName)
+	}
+	if !h.hasLog(t, "WARNING", "failed to resolve property name") {
+		t.Error("物件名の取得失敗は WARNING で残すべき")
+	}
+}
+
+func TestSendLogsPropertyName(t *testing.T) {
+	h := newHarness(t, nil)
+	h.store.Seed(ledger.Entry{
+		ID: "1", PropertyName: "アーバン北新宿", RoomNumber: "302",
+		Status: ledger.StatusPending, DetectedAt: now,
+	})
+
+	if _, err := h.svc.Dispatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range h.logLines(t) {
+		if l["message"] == "entry accepted by heroku" {
+			if l["propertyName"] != "アーバン北新宿" || l["roomNumber"] != "302" {
+				t.Fatalf("送信ログに物件名が無い: %v", l)
+			}
+			return
+		}
+	}
+	t.Fatal("送信ログが見つからない")
+}
+
+func TestSendOmitsEmptyPropertyName(t *testing.T) {
+	// この機能より前に登録された申込は物件名を持たない。
+	h := newHarness(t, nil)
+	h.store.Seed(ledger.Entry{ID: "1", Status: ledger.StatusPending, DetectedAt: now})
+
+	if _, err := h.svc.Dispatch(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range h.logLines(t) {
+		if l["message"] == "entry accepted by heroku" {
+			if _, ok := l["propertyName"]; ok {
+				t.Fatalf("空の物件名はキーごと落とすべき: %v", l)
+			}
+			return
+		}
+	}
+	t.Fatal("送信ログが見つからない")
+}
+
 func TestDetectIsIdempotentAcrossRuns(t *testing.T) {
 	h := newHarness(t, nil)
-	h.lister.entries = []itandi.EntryHead{head(1, 120)}
+	h.client.entries = []itandi.EntryHead{head(1, 120)}
 
 	first, err := h.svc.Detect(context.Background())
 	if err != nil {
@@ -253,7 +390,7 @@ func TestDetectIsIdempotentAcrossRuns(t *testing.T) {
 
 func TestDetectDryRunDoesNotWriteToLedger(t *testing.T) {
 	h := newHarness(t, map[string]string{EnvDryRun: "true"})
-	h.lister.entries = []itandi.EntryHead{head(1, 120), head(2, 120)}
+	h.client.entries = []itandi.EntryHead{head(1, 120), head(2, 120)}
 
 	res, err := h.svc.Detect(context.Background())
 	if err != nil {
@@ -275,7 +412,7 @@ func TestDetectDryRunDoesNotWriteToLedger(t *testing.T) {
 
 func TestDetectDryRunStillReportsExistingEntries(t *testing.T) {
 	h := newHarness(t, map[string]string{EnvDryRun: "true"})
-	h.lister.entries = []itandi.EntryHead{head(1, 120)}
+	h.client.entries = []itandi.EntryHead{head(1, 120)}
 	h.store.Seed(ledger.Entry{ID: "1", Status: ledger.StatusDone, DetectedAt: now.Add(-time.Hour)})
 
 	res, err := h.svc.Detect(context.Background())
@@ -291,7 +428,7 @@ func TestDetectDryRunStillReportsExistingEntries(t *testing.T) {
 func TestDetectWarnsWhenListHitsResultCap(t *testing.T) {
 	h := newHarness(t, nil)
 	for i := 1; i <= itandi.MaxListResults; i++ {
-		h.lister.entries = append(h.lister.entries, head(int64(i), 120))
+		h.client.entries = append(h.client.entries, head(int64(i), 120))
 	}
 
 	res, err := h.svc.Detect(context.Background())
@@ -308,7 +445,7 @@ func TestDetectWarnsWhenListHitsResultCap(t *testing.T) {
 
 func TestDetectDoesNotWarnBelowCap(t *testing.T) {
 	h := newHarness(t, nil)
-	h.lister.entries = []itandi.EntryHead{head(1, 120)}
+	h.client.entries = []itandi.EntryHead{head(1, 120)}
 
 	res, err := h.svc.Detect(context.Background())
 	if err != nil {
@@ -321,7 +458,7 @@ func TestDetectDoesNotWarnBelowCap(t *testing.T) {
 
 func TestDetectPropagatesListError(t *testing.T) {
 	h := newHarness(t, nil)
-	h.lister.err = errors.New("itandi down")
+	h.client.err = errors.New("itandi down")
 
 	if _, err := h.svc.Detect(context.Background()); err == nil ||
 		!strings.Contains(err.Error(), "itandi down") {
@@ -331,7 +468,7 @@ func TestDetectPropagatesListError(t *testing.T) {
 
 func TestDetectContinuesAfterPerEntryStoreError(t *testing.T) {
 	h := newHarness(t, nil)
-	h.lister.entries = []itandi.EntryHead{head(1, 120), head(2, 120)}
+	h.client.entries = []itandi.EntryHead{head(1, 120), head(2, 120)}
 	h.store.FailPut = errors.New("firestore unavailable")
 
 	res, err := h.svc.Detect(context.Background())
@@ -349,7 +486,7 @@ func TestDetectContinuesAfterPerEntryStoreError(t *testing.T) {
 
 func TestDetectReportsGetErrorWithoutQueueing(t *testing.T) {
 	h := newHarness(t, nil)
-	h.lister.entries = []itandi.EntryHead{head(1, 120)}
+	h.client.entries = []itandi.EntryHead{head(1, 120)}
 	h.store.FailGet = errors.New("get boom")
 
 	res, err := h.svc.Detect(context.Background())
@@ -668,7 +805,7 @@ func TestDispatchNotBeforeNextRetryAt(t *testing.T) {
 func TestDispatchDryRunDoesNotSendAndLeavesLedgerUntouched(t *testing.T) {
 	h := newHarness(t, map[string]string{EnvDryRun: "true"})
 	dry := webhook.DryRunSender{Logger: logging.New(h.logs, logging.Options{}), Target: h.cfg.HerokuWebhookURL}
-	svc, err := New(h.cfg, h.lister, h.store, dry, Options{
+	svc, err := New(h.cfg, h.client, h.store, dry, Options{
 		Clock:  h.clk,
 		Logger: logging.New(h.logs, logging.Options{Level: slog.LevelDebug}),
 	})
@@ -702,12 +839,12 @@ func TestDryRunLeavesNothingBehindThenRealRunSends(t *testing.T) {
 	// DRY_RUN で検証 → 本稼働へ切り替え、という運用手順をそのまま再現する。
 	// h.svc は DRY_RUN 無効、dry は同じ台帳を使う DRY_RUN 有効の Service。
 	h := newHarness(t, nil)
-	h.lister.entries = []itandi.EntryHead{head(1, 120)}
+	h.client.entries = []itandi.EntryHead{head(1, 120)}
 
 	dryCfg := h.cfg
 	dryCfg.DryRun = true
 	dryLog := logging.New(h.logs, logging.Options{Level: slog.LevelDebug})
-	dry, err := New(dryCfg, h.lister, h.store, webhook.DryRunSender{Logger: dryLog}, Options{
+	dry, err := New(dryCfg, h.client, h.store, webhook.DryRunSender{Logger: dryLog}, Options{
 		Clock:  h.clk,
 		Logger: dryLog,
 	})
@@ -803,7 +940,7 @@ func TestDispatchAppliesRequestTimeout(t *testing.T) {
 
 func TestRunExecutesBothPhases(t *testing.T) {
 	h := newHarness(t, nil)
-	h.lister.entries = []itandi.EntryHead{head(1, 120), head(2, 120)}
+	h.client.entries = []itandi.EntryHead{head(1, 120), head(2, 120)}
 
 	summary, err := h.svc.Run(context.Background())
 	if err != nil {
@@ -822,7 +959,7 @@ func TestRunExecutesBothPhases(t *testing.T) {
 
 func TestRunDispatchesEvenWhenDetectFails(t *testing.T) {
 	h := newHarness(t, nil)
-	h.lister.err = errors.New("itandi 403 (ip not allowed)")
+	h.client.err = errors.New("itandi 403 (ip not allowed)")
 	h.store.Seed(ledger.Entry{ID: "1", Status: ledger.StatusPending, DetectedAt: now})
 
 	summary, err := h.svc.Run(context.Background())
@@ -839,7 +976,7 @@ func TestRunDispatchesEvenWhenDetectFails(t *testing.T) {
 
 func TestRunBacklogDrainsOneEntryPerRun(t *testing.T) {
 	h := newHarness(t, nil)
-	h.lister.entries = []itandi.EntryHead{head(1, 120), head(2, 120), head(3, 120)}
+	h.client.entries = []itandi.EntryHead{head(1, 120), head(2, 120), head(3, 120)}
 
 	var sent []int64
 	for i := 0; i < 3; i++ {

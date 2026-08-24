@@ -175,6 +175,54 @@ func TestDecodeErrorOnInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestTextBodyLookup(t *testing.T) {
+	e := EntryHead{EntryBodies: []EntryBody{
+		{Type: "text", Name: "room_name", Text: "アーバン北新宿"},
+		{Type: "text", Name: "room_number", Text: "302"},
+		{Type: "select", Name: "ignored", Text: "選択肢"},
+	}}
+
+	if got := e.RoomName(); got != "アーバン北新宿" {
+		t.Errorf("RoomName() = %q", got)
+	}
+	if got := e.RoomNumber(); got != "302" {
+		t.Errorf("RoomNumber() = %q", got)
+	}
+	// 項目自体が任意入力なので、無い場合は空文字でよい（エラーにしない）。
+	if got := e.TextBody("missing"); got != "" {
+		t.Errorf("TextBody(missing) = %q, want empty", got)
+	}
+	// text 以外の型は拾わない。
+	if got := e.TextBody("ignored"); got != "" {
+		t.Errorf("TextBody(ignored) = %q, want empty (non-text type)", got)
+	}
+	if got := (EntryHead{}).RoomName(); got != "" {
+		t.Errorf("entry_bodies が空でも安全に空文字を返すべき, got %q", got)
+	}
+}
+
+func TestGetEntryHeadParsesEntryBodies(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id":5657694,"entry_status_id":120,"priotity":2,
+          "entry_bodies":[
+            {"type":"text","id":1,"text":"アーバン北新宿","name":"room_name"},
+            {"type":"text","id":2,"text":"302","name":"room_number"}
+          ]}`))
+	})
+
+	got, err := c.GetEntryHead(context.Background(), 5657694)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RoomName() != "アーバン北新宿" || got.RoomNumber() != "302" {
+		t.Errorf("物件名/部屋番号が取れていない: %+v", got.EntryBodies)
+	}
+	// API のフィールド名は "priotity"（綴り間違い）。仕様書の "priority" では取れない。
+	if got.Priority != 2 {
+		t.Errorf("Priority = %d, want 2", got.Priority)
+	}
+}
+
 func TestGetEntryHead(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/maintenance_company/api/v2/entry_heads/999" {
