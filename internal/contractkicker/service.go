@@ -88,6 +88,8 @@ type Summary struct {
 	Detected int
 	// NewlyQueued は台帳へ新規 pending 登録した件数。
 	NewlyQueued int
+	// WouldQueue は DRY_RUN のため台帳へ書かなかった件数。
+	WouldQueue int
 	// Selected は送信対象として選ばれた件数。
 	Selected int
 	// Sent は Heroku が受け付けた件数。
@@ -107,6 +109,7 @@ func (s Summary) LogAttrs() []any {
 	return []any{
 		"detected", s.Detected,
 		"newlyQueued", s.NewlyQueued,
+		"wouldQueue", s.WouldQueue,
 		"selected", s.Selected,
 		"sent", s.Sent,
 		"failed", s.Failed,
@@ -130,6 +133,7 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 	detected, err := s.Detect(ctx)
 	summary.Detected = detected.Detected
 	summary.NewlyQueued = detected.NewlyQueued
+	summary.WouldQueue = detected.WouldQueue
 	summary.ListTruncated = detected.ListTruncated
 	if err != nil {
 		s.log.ErrorContext(ctx, "detect phase failed", "error", err.Error())
@@ -155,8 +159,10 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 
 // DetectResult は Phase A の結果。
 type DetectResult struct {
-	Detected      int
-	NewlyQueued   int
+	Detected    int
+	NewlyQueued int
+	// WouldQueue は DRY_RUN のため台帳へ書かなかった件数。
+	WouldQueue    int
 	ListTruncated bool
 }
 
@@ -164,6 +170,9 @@ type DetectResult struct {
 //
 // 取得窓に入った対象ステータスの申込のうち、台帳に無いものを pending として
 // 登録する。この時点では送信しない。
+//
+// DRY_RUN では台帳へ書かず、対象になる申込をログに出すだけにする
+// （DRY_RUN が本番の台帳を汚さないようにするため。詳細は下部）。
 //
 // 「検知したら即送信」にしていないのは、送信が 1 実行 1 件に絞られているため。
 // 即送信だと 1 件目を送っている間に残りが ITANDI の取得窓（datetime）から
@@ -218,6 +227,16 @@ func (s *Service) Detect(ctx context.Context) (DetectResult, error) {
 			continue
 		}
 
+		// DRY_RUN では書かない。ここで pending を積んでしまうと、DRY_RUN を
+		// 外した時点でその申込が送信対象として残り、「検証しただけ」のつもりが
+		// 実際の格納につながってしまう。ログに出せば確認目的は満たせる。
+		if s.cfg.DryRun {
+			res.WouldQueue++
+			log.InfoContext(ctx, "dry run: entry would be queued but the ledger was not updated",
+				"entryStatusId", e.EntryStatusID)
+			continue
+		}
+
 		// 未登録なので pending として積む。送信はこの実行では行わない。
 		queued := ledger.Entry{
 			ID:         id,
@@ -236,6 +255,7 @@ func (s *Service) Detect(ctx context.Context) (DetectResult, error) {
 	s.log.InfoContext(ctx, "detect phase finished",
 		"detected", res.Detected,
 		"newlyQueued", res.NewlyQueued,
+		"wouldQueue", res.WouldQueue,
 		"since", since.UTC().Format(time.RFC3339),
 	)
 	return res, errors.Join(errs...)
