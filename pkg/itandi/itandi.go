@@ -46,6 +46,15 @@ const (
 	// 直近の申込から落ちる。件数がこの値に達したら窓を狭めて取り直すこと。
 	MaxListResults = 500
 
+	// BodyRoomName / BodyRoomNumber は entry_bodies から物件名・部屋番号を
+	// 取り出すときの name。詳細（GET /entry_heads/{id}）にのみ含まれ、
+	// 一覧（GET /entry_heads）のレスポンスには入っていない。
+	BodyRoomName   = "room_name"
+	BodyRoomNumber = "room_number"
+
+	// bodyTypeText は entry_bodies のうち text 型を表す。
+	bodyTypeText = "text"
+
 	// datetimeLayout は datetime / end_datetime クエリの書式。
 	// API 仕様の例にタイムゾーンが無いため、オフセット無しで送る。
 	datetimeLayout = "2006-01-02T15:04:05"
@@ -68,8 +77,37 @@ type EntryHead struct {
 	ForeignContractKey *string   `json:"foreign_contract_key"`
 	CreatedAt          time.Time `json:"created_at"`
 	UpdatedAt          time.Time `json:"updated_at"`
-	Priority           int       `json:"priority"`
+	// Priority は申込の番手。API のフィールド名が "priotity" と綴り間違いに
+	// なっているため、仕様書（"priority"）ではなく実際のキーに合わせている。
+	Priority int `json:"priotity"`
+	// EntryBodies は申込内容の項目群。詳細取得（GetEntryHead）でのみ埋まる。
+	EntryBodies []EntryBody `json:"entry_bodies"`
 }
+
+// EntryBody は申込内容の 1 項目。type によって入るフィールドが変わるため、
+// text 型で使うものだけを型付けしている。
+type EntryBody struct {
+	Type string `json:"type"`
+	Name string `json:"name"`
+	Text string `json:"text"`
+}
+
+// TextBody は entry_bodies から text 型の項目を名前で引く。
+// 見つからなければ空文字（項目自体が任意入力のため、欠落は異常ではない）。
+func (e EntryHead) TextBody(name string) string {
+	for _, b := range e.EntryBodies {
+		if b.Type == bodyTypeText && b.Name == name {
+			return b.Text
+		}
+	}
+	return ""
+}
+
+// RoomName は物件名を返す。詳細取得したレスポンスでのみ得られる。
+func (e EntryHead) RoomName() string { return e.TextBody(BodyRoomName) }
+
+// RoomNumber は部屋番号を返す。詳細取得したレスポンスでのみ得られる。
+func (e EntryHead) RoomNumber() string { return e.TextBody(BodyRoomNumber) }
 
 // APIError は 2xx 以外のレスポンスを表す。
 // errors.As で取り出してステータスコードごとの判断ができるようにしている。

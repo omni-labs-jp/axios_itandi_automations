@@ -14,14 +14,19 @@ import (
 	"github.com/omni-labs-jp/axios_itandi_automations/pkg/webhook"
 )
 
-// EntryLister は ITANDI 申込一覧の取得を抽象化する（*itandi.Client が実装）。
+// EntryClient は ITANDI 申込 API のうちキッカーが使う操作（*itandi.Client が実装）。
 //
 // interface で切っているのは 2 つの理由から。
-//   - テストで HTTP を立てずに済む（service_test.go の fakeLister）
-//   - 一覧の取得経路を変える場合（Heroku 経由にする、別 API に移る等）、
+//   - テストで HTTP を立てずに済む（service_test.go の fakeEntryClient）
+//   - 取得経路を変える場合（Heroku 経由にする、別 API に移る等）、
 //     この interface の実装を差し替えるだけで Service 側は無変更で済む
-type EntryLister interface {
+//
+// GetEntryHead は物件名・部屋番号の取得にだけ使う。一覧レスポンスの
+// properties[] には room_id しか入っておらず、物件名は詳細の entry_bodies に
+// しか無いため、新規検知した申込 1 件ごとに 1 回追加で呼ぶ。
+type EntryClient interface {
 	ListEntryHeads(ctx context.Context, p itandi.ListParams) ([]itandi.EntryHead, error)
+	GetEntryHead(ctx context.Context, id int64) (*itandi.EntryHead, error)
 }
 
 // Service は Phase A / Phase B を実行する。
@@ -31,7 +36,7 @@ type EntryLister interface {
 // あるのでインスタンスは使い捨てでよい。
 type Service struct {
 	cfg    Config
-	lister EntryLister    // ITANDI 申込一覧の取得（Phase A）
+	client EntryClient    // ITANDI 申込の一覧・詳細取得（Phase A）
 	store  ledger.Store   // 処理台帳。実行間で状態を引き継ぐ唯一の場所
 	sender webhook.Sender // Heroku への送信（Phase B）。DRY_RUN 時は DryRunSender
 	clk    clock.Clock    // 取得窓・バックオフの基準時刻。テストで固定できる
@@ -50,12 +55,12 @@ type Options struct {
 //
 // nil チェックをここでまとめてやるのは、Cloud Run Job の 1 実行が短命で、
 // 途中の nil panic だと「何が足りなかったか」がログに残りにくいため。
-func New(cfg Config, lister EntryLister, store ledger.Store, sender webhook.Sender, opts Options) (*Service, error) {
+func New(cfg Config, client EntryClient, store ledger.Store, sender webhook.Sender, opts Options) (*Service, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	if lister == nil {
-		return nil, errors.New("contractkicker: lister is required")
+	if client == nil {
+		return nil, errors.New("contractkicker: entry client is required")
 	}
 	if store == nil {
 		return nil, errors.New("contractkicker: store is required")
@@ -74,7 +79,7 @@ func New(cfg Config, lister EntryLister, store ledger.Store, sender webhook.Send
 		log = slog.Default()
 	}
 
-	return &Service{cfg: cfg, lister: lister, store: store, sender: sender, clk: clk, log: log}, nil
+	return &Service{cfg: cfg, client: client, store: store, sender: sender, clk: clk, log: log}, nil
 }
 
 // Summary は 1 実行の結果サマリ。
@@ -183,7 +188,7 @@ func (s *Service) Detect(ctx context.Context) (DetectResult, error) {
 	now := s.clk.Now()
 	since := now.Add(-s.cfg.Lookback)
 
-	entries, err := s.lister.ListEntryHeads(ctx, itandi.ListParams{
+	entries, err := s.client.ListEntryHeads(ctx, itandi.ListParams{
 		UpdatedSince: since,
 		StatusIDs:    []int{s.cfg.TargetStatusID},
 	})
@@ -227,6 +232,11 @@ func (s *Service) Detect(ctx context.Context) (DetectResult, error) {
 			continue
 		}
 
+		// 申込 ID だけではログから物件を特定できないので、ここで物件名を引く。
+		// 失敗しても申込は積む（名前はログの利便性のためで、処理には不要）。
+		name, room := s.resolveProperty(ctx, e.ID, log)
+		log = log.With(propertyAttrs(name, room)...)
+
 		// DRY_RUN では書かない。ここで pending を積んでしまうと、DRY_RUN を
 		// 外した時点でその申込が送信対象として残り、「検証しただけ」のつもりが
 		// 実際の格納につながってしまう。ログに出せば確認目的は満たせる。
@@ -239,10 +249,12 @@ func (s *Service) Detect(ctx context.Context) (DetectResult, error) {
 
 		// 未登録なので pending として積む。送信はこの実行では行わない。
 		queued := ledger.Entry{
-			ID:         id,
-			Status:     ledger.StatusPending,
-			DetectedAt: now,
-			UpdatedAt:  now,
+			ID:           id,
+			PropertyName: name,
+			RoomNumber:   room,
+			Status:       ledger.StatusPending,
+			DetectedAt:   now,
+			UpdatedAt:    now,
 		}
 		if err := s.store.Put(ctx, queued); err != nil {
 			errs = append(errs, fmt.Errorf("detect: put %s: %w", id, err))
@@ -259,6 +271,33 @@ func (s *Service) Detect(ctx context.Context) (DetectResult, error) {
 		"since", since.UTC().Format(time.RFC3339),
 	)
 	return res, errors.Join(errs...)
+}
+
+// resolveProperty は申込詳細から物件名と部屋番号を引く。
+//
+// 取得に失敗しても処理は止めない（ログの見やすさのためだけの情報なので、
+// ここで申込を落とす方が損失が大きい）。失敗は WARNING に留める。
+func (s *Service) resolveProperty(ctx context.Context, entryID int64, log *slog.Logger) (name, room string) {
+	detail, err := s.client.GetEntryHead(ctx, entryID)
+	if err != nil {
+		log.WarnContext(ctx, "failed to resolve property name; queueing without it",
+			"error", err.Error())
+		return "", ""
+	}
+	return detail.RoomName(), detail.RoomNumber()
+}
+
+// propertyAttrs は物件名・部屋番号のログ属性を組み立てる。
+// 空の値はキーごと落とす（空文字が並ぶとログが読みにくくなる）。
+func propertyAttrs(name, room string) []any {
+	var attrs []any
+	if name != "" {
+		attrs = append(attrs, "propertyName", name)
+	}
+	if room != "" {
+		attrs = append(attrs, "roomNumber", room)
+	}
+	return attrs
 }
 
 // DispatchResult は Phase B の結果。
@@ -370,7 +409,10 @@ type contractPayload struct {
 // 次回同じ申込を再送する可能性がある。Heroku 側が同名スキップで冪等なため
 // 実害は小さいが、記録失敗は ERROR で目立たせる（下部参照）。
 func (s *Service) send(ctx context.Context, e ledger.Entry) (ledger.Status, error) {
+	// 台帳に物件名が入っていれば送信ログにも出す（本機能より前に登録された
+	// 申込は空なので、その場合は entryHeadId だけになる）。
 	log := s.log.With("entryHeadId", e.ID)
+	log = log.With(propertyAttrs(e.PropertyName, e.RoomNumber)...)
 
 	// 台帳のキーは数値 ID の文字列表現。ここで壊れているのはデータ不整合なので
 	// 送信せずエラーにする（何度リトライしても直らない）。
