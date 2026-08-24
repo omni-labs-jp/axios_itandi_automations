@@ -46,9 +46,18 @@ Phase B（送信・1 実行 SEND_LIMIT_PER_RUN 件）
                     attempts >= MAX_ATTEMPTS → gaveup（ERROR ログ）
 ```
 
-`DRY_RUN=true` のときは送信せず、**台帳も更新しない**（pending のまま残す）。
-ここで done を書いてしまうと DRY_RUN を外した時に「台帳上は処理済みなので
-誰も送らない」状態になり、検証したはずの申込がまるごと落ちるため。
+`DRY_RUN=true` のときは**台帳を一切変更しない**。
+
+- Phase A: 検知した申込をログに出すだけで `pending` 登録はしない
+- Phase B: Heroku へ送らず、選んだ申込のステータスも更新しない
+
+Phase A で書いてしまうと、DRY_RUN を外した時点でその申込が送信対象として残り、
+「検証しただけ」のつもりが実際の格納につながる。Phase B で `done` を書くと逆に
+「台帳上は処理済みなので誰も送らない」状態になり、検証したはずの申込が落ちる。
+どちらも避けるため、DRY_RUN は副作用ゼロにしている。
+
+取得窓（`LOOKBACK_HOURS`）に入っている限り同じ申込は次の実行でも検知されるので、
+DRY_RUN 中に書かないことで取りこぼすことはない。
 
 `pending` を `failed` より優先するのが肝。逆にすると壊れた 1 件で後続が全部詰まる。
 
@@ -277,7 +286,9 @@ gcloud datastore indexes create deploy/index.yaml \
 - 初回リリース時は `DRY_RUN=true` + Scheduler 停止でデプロイし、
   検知件数と中身を確認してから本稼働へ切り替える。
   24 時間窓だと検知 0 件のことが多いので、確認したいときは `LOOKBACK_HOURS` を
-  一時的に広げる（`DRY_RUN` 中は台帳を更新しないので副作用なし）
+  一時的に広げる（`DRY_RUN` 中は台帳を一切変更しないので副作用なし）。
+  ジョブ設定を変えずに 1 回だけ試すなら実行時オーバーライドが使える:
+  `gcloud run jobs execute contract-kicker --region asia-northeast1 --update-env-vars LOOKBACK_HOURS=720 --wait`
 - **過去分（契約になって時間が経った申込）は自動的に対象外**。Phase A の窓は
   `now - LOOKBACK_HOURS` なので、リリース時点で既に契約だった約 1100 件は
   そもそも検知されない。seed で処理済みにする作業は不要

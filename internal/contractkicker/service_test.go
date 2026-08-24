@@ -251,6 +251,43 @@ func TestDetectIsIdempotentAcrossRuns(t *testing.T) {
 	}
 }
 
+func TestDetectDryRunDoesNotWriteToLedger(t *testing.T) {
+	h := newHarness(t, map[string]string{EnvDryRun: "true"})
+	h.lister.entries = []itandi.EntryHead{head(1, 120), head(2, 120)}
+
+	res, err := h.svc.Detect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Detected != 2 {
+		t.Fatalf("res = %+v", res)
+	}
+	if res.NewlyQueued != 0 || res.WouldQueue != 2 {
+		t.Fatalf("res = %+v; DRY_RUN では書かずに WouldQueue で数えるべき", res)
+	}
+	if h.store.Len() != 0 {
+		t.Fatalf("台帳に %d 件書かれている。DRY_RUN は本番の台帳を汚してはいけない", h.store.Len())
+	}
+	if !h.hasLog(t, "INFO", "would be queued") {
+		t.Error("対象申込がログに出ていない（DRY_RUN の確認手段が無くなる）")
+	}
+}
+
+func TestDetectDryRunStillReportsExistingEntries(t *testing.T) {
+	h := newHarness(t, map[string]string{EnvDryRun: "true"})
+	h.lister.entries = []itandi.EntryHead{head(1, 120)}
+	h.store.Seed(ledger.Entry{ID: "1", Status: ledger.StatusDone, DetectedAt: now.Add(-time.Hour)})
+
+	res, err := h.svc.Detect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 既知の申込は DRY_RUN でも WouldQueue に数えない。
+	if res.WouldQueue != 0 || res.NewlyQueued != 0 {
+		t.Fatalf("res = %+v", res)
+	}
+}
+
 func TestDetectWarnsWhenListHitsResultCap(t *testing.T) {
 	h := newHarness(t, nil)
 	for i := 1; i <= itandi.MaxListResults; i++ {
@@ -661,34 +698,43 @@ func TestDispatchDryRunDoesNotSendAndLeavesLedgerUntouched(t *testing.T) {
 	}
 }
 
-func TestDryRunThenRealRunStillSends(t *testing.T) {
+func TestDryRunLeavesNothingBehindThenRealRunSends(t *testing.T) {
 	// DRY_RUN で検証 → 本稼働へ切り替え、という運用手順をそのまま再現する。
-	h := newHarness(t, map[string]string{EnvDryRun: "true"})
+	// h.svc は DRY_RUN 無効、dry は同じ台帳を使う DRY_RUN 有効の Service。
+	h := newHarness(t, nil)
 	h.lister.entries = []itandi.EntryHead{head(1, 120)}
 
+	dryCfg := h.cfg
+	dryCfg.DryRun = true
 	dryLog := logging.New(h.logs, logging.Options{Level: slog.LevelDebug})
-	dry, err := New(h.cfg, h.lister, h.store, webhook.DryRunSender{Logger: dryLog}, Options{
+	dry, err := New(dryCfg, h.lister, h.store, webhook.DryRunSender{Logger: dryLog}, Options{
 		Clock:  h.clk,
 		Logger: dryLog,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := dry.Run(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if got := h.entry(t, "1"); got.Status != ledger.StatusPending {
-		t.Fatalf("after dry run: status = %s, want pending", got.Status)
-	}
 
-	// DRY_RUN=false 相当（実 Sender）へ切り替える。
-	h.clk.Advance(15 * time.Minute)
-	summary, err := h.svc.Run(context.Background())
+	summary, err := dry.Run(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.Sent != 1 {
-		t.Fatalf("summary = %+v; the entry examined during dry run must still be sent", summary)
+	if summary.Detected != 1 || summary.WouldQueue != 1 || summary.NewlyQueued != 0 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	if h.store.Len() != 0 {
+		t.Fatalf("DRY_RUN の後に台帳へ %d 件残っている", h.store.Len())
+	}
+
+	// 本稼働へ切り替え。取得窓に入っている限り同じ申込が再度検知されるので、
+	// DRY_RUN 中に書かなくても取りこぼさない。
+	h.clk.Advance(15 * time.Minute)
+	summary, err = h.svc.Run(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.NewlyQueued != 1 || summary.Sent != 1 {
+		t.Fatalf("summary = %+v; 本稼働後は通常どおり登録して送るべき", summary)
 	}
 	if got := h.entry(t, "1"); got.Status != ledger.StatusDone {
 		t.Errorf("status = %s, want done", got.Status)
@@ -834,7 +880,8 @@ func TestSummaryLogAttrs(t *testing.T) {
 	for i := 0; i < len(attrs); i += 2 {
 		found[attrs[i].(string)] = attrs[i+1]
 	}
-	if found["detected"] != 5 || found["newlyQueued"] != 2 || found["listTruncated"] != true || found["dryRun"] != 0 {
+	if found["detected"] != 5 || found["newlyQueued"] != 2 || found["listTruncated"] != true ||
+		found["dryRun"] != 0 || found["wouldQueue"] != 0 {
 		t.Fatalf("unexpected attrs: %v", found)
 	}
 }
