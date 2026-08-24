@@ -23,8 +23,9 @@ env:
   SERVICE_ACCOUNT: contract-kicker-run-client@omni-property-prd.iam.gserviceaccount.com
 
   # ---- Cloud Run Job に渡すアプリ設定 ----
-  # 検証が終わったら false にしてタグを打ち直す（設定変更もレビューを通る）
-  DRY_RUN: "true"
+  # DRY_RUN 検証（2026-08-24）を完了して本稼働へ切り替えた。
+  # 一時的に送信を止めたい場合はここを "true" にしてタグを打ち直す。
+  DRY_RUN: "false"
   # omni-property-prd には Firestore が未作成（Firestore API 自体が未有効）。
   # 既定 DB を Datastore mode で潰すと property 系が将来 Native mode を
   # 使えなくなるため、自動化用の named database を作ってそこに載せる。
