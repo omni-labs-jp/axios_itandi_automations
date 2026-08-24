@@ -20,6 +20,7 @@ pkg/logging/             Cloud Logging 互換の構造化ログ
 pkg/env/                 環境変数の読み込み・検証（エラーをまとめて報告）
 pkg/clock/               テスト可能な時刻取得
 deploy/index.yaml        Datastore 複合インデックス
+docs/deployment-log.md   導入ログ・現在地・運用コマンド
 .github/workflows/       CI とデプロイ（Cloud Run Job の作成・更新）
 ```
 
@@ -165,6 +166,8 @@ go test ./pkg/ledger/... -run Emulator -v
 ```
 
 ## デプロイ
+
+本番導入の経緯・現在地・運用コマンドは [docs/deployment-log.md](docs/deployment-log.md) を参照。
 
 `system-prpty-omni` の `mail-ingestion-job` と同じ作法に揃えている。
 
