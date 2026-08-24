@@ -144,7 +144,9 @@ ITANDI 側の Webhook 設定（「申込データ更新時」→ `/webhook/itand
    omni-infrastructure に追加する。`gaveup` / ITANDI 取得失敗 / 設定不備がすべて
    ERROR で出るので 1 本で拾える。通知先の決定が必要
 2. **数日間の監視** — `gaveup` が出ていないかを日次で確認
-3. **ITANDI トークンのローテーション** — 実装手順書（Obsidian）に平文で残っているため
+
+ITANDI API トークンは実装手順書（Obsidian）に平文で残っているが、
+運用側の判断でローテーションは行わない（2026-08-24）。
 
 ## 旧・残作業（完了済み）
 
