@@ -109,6 +109,7 @@ gcloud datastore indexes create deploy/index.yaml
 | `FIRESTORE_NAMESPACE` | `contract-kicker` | 相乗り時の名前空間分離（本番は `axios`） |
 | `FIRESTORE_KIND` | `contract_kicker_entries` | 台帳の Kind |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
+| `LEDGER_BACKEND` | `datastore` | `memory` でインメモリ台帳（ローカル確認用。`DRY_RUN=true` 必須） |
 
 設定不備は起動時にまとめて ERROR ログへ出して終了コード 1。
 
@@ -135,6 +136,24 @@ mise run dev-contract-kicker    # DRY_RUN でローカル実行（GCP 認証が�
 
 lint 設定（`.golangci.yml`）も `system-prpty-omni` と揃えている
 （errcheck / govet / staticcheck + gofumpt / goimports）。
+
+### ローカルでの動作確認
+
+GCP に触らずに Phase A の挙動（ITANDI から何件拾えるか、どの申込が対象になるか）を
+確認できる。ITANDI API は**本物を叩き**、台帳はインメモリ、Heroku へは送らない。
+
+```bash
+ITANDI_API_TOKEN=xxx LOOKBACK_HOURS=720 mise run local-check
+```
+
+`LEDGER_BACKEND=memory` は実行が終わると台帳が消えるため、`DRY_RUN=true` と
+併用しない場合は起動時にエラーになる（同じ申込を Heroku へ送り続けるのを防ぐため）。
+
+既定の 24 時間窓だと検知 0 件になることが多いので、`LOOKBACK_HOURS` を広げて
+確認するとよい（実測で 30 日 = 11 件）。
+
+実 Datastore を相手に確認する場合は `mise run dev-contract-kicker`
+（`gcloud auth application-default login` と DB の存在が必要）。
 
 台帳の Firestore 実装は Datastore エミュレータがある場合のみ実 API に対して
 共通スイートを走らせる（無い場合は自動 skip）:

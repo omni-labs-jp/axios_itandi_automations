@@ -66,15 +66,9 @@ func run(ctx context.Context, cfg contractkicker.Config, log *slog.Logger) error
 		return fmt.Errorf("itandi client: %w", err)
 	}
 
-	// 台帳。プロジェクト ID は Cloud Run 上では自動検出される。
-	store, err := ledger.NewDatastoreStore(ctx, ledger.DatastoreConfig{
-		ProjectID:  cfg.GCPProjectID,
-		DatabaseID: cfg.FirestoreDatabaseID,
-		Namespace:  cfg.FirestoreNamespace,
-		Kind:       cfg.FirestoreKind,
-	})
+	store, err := newStore(ctx, cfg, log)
 	if err != nil {
-		return fmt.Errorf("ledger store: %w", err)
+		return err
 	}
 	defer func() {
 		if err := store.Close(); err != nil {
@@ -96,6 +90,29 @@ func run(ctx context.Context, cfg contractkicker.Config, log *slog.Logger) error
 		return err
 	}
 	return nil
+}
+
+// newStore は LEDGER_BACKEND に応じた台帳を返す。
+//
+// memory は Config.Validate が DRY_RUN との併用を強制しているので、
+// ここに来る時点で送信は行われない（＝実行のたびに消えても害がない）。
+func newStore(ctx context.Context, cfg contractkicker.Config, log *slog.Logger) (ledger.Store, error) {
+	if cfg.LedgerBackend == contractkicker.LedgerMemory {
+		log.Warn("using in-memory ledger; state is discarded when this run ends")
+		return ledger.NewMemoryStore(), nil
+	}
+
+	// プロジェクト ID は Cloud Run 上では自動検出される。
+	store, err := ledger.NewDatastoreStore(ctx, ledger.DatastoreConfig{
+		ProjectID:  cfg.GCPProjectID,
+		DatabaseID: cfg.FirestoreDatabaseID,
+		Namespace:  cfg.FirestoreNamespace,
+		Kind:       cfg.FirestoreKind,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ledger store: %w", err)
+	}
+	return store, nil
 }
 
 // newSender は DRY_RUN に応じて実送信 / ログのみの Sender を返す。

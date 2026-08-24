@@ -93,6 +93,51 @@ func TestLoadConfigOverrides(t *testing.T) {
 	}
 }
 
+func TestLedgerBackend(t *testing.T) {
+	t.Run("既定は datastore", func(t *testing.T) {
+		cfg, err := LoadConfig(env.NewFromMap(minimalEnv()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.LedgerBackend != LedgerDatastore {
+			t.Fatalf("LedgerBackend = %q, want %q", cfg.LedgerBackend, LedgerDatastore)
+		}
+	})
+
+	t.Run("memory は DRY_RUN 併用で許可", func(t *testing.T) {
+		m := minimalEnv()
+		m[EnvLedgerBackend] = "memory"
+		m[EnvDryRun] = "true"
+		cfg, err := LoadConfig(env.NewFromMap(m))
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if cfg.LedgerBackend != LedgerMemory {
+			t.Fatalf("LedgerBackend = %q", cfg.LedgerBackend)
+		}
+	})
+
+	t.Run("memory を DRY_RUN 無しで使うと弾く", func(t *testing.T) {
+		m := minimalEnv()
+		m[EnvLedgerBackend] = "memory"
+		_, err := LoadConfig(env.NewFromMap(m))
+		if err == nil {
+			t.Fatal("インメモリ台帳 + 実送信は同じ申込を再送し続けるので弾くべき")
+		}
+		if !strings.Contains(err.Error(), EnvDryRun) {
+			t.Errorf("エラーに %s の指示が必要: %v", EnvDryRun, err)
+		}
+	})
+
+	t.Run("未知の値は弾く", func(t *testing.T) {
+		m := minimalEnv()
+		m[EnvLedgerBackend] = "redis"
+		if _, err := LoadConfig(env.NewFromMap(m)); err == nil {
+			t.Fatal("未知のバックエンドはエラーにすべき")
+		}
+	})
+}
+
 func TestLoadConfigReportsAllMissingValuesAtOnce(t *testing.T) {
 	_, err := LoadConfig(env.NewFromMap(map[string]string{}))
 	if err == nil {

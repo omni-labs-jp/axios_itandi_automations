@@ -61,6 +61,10 @@ type Config struct {
 
 	// LogLevel は "debug"/"info"/"warn"/"error"。
 	LogLevel string
+
+	// LedgerBackend は台帳の実装。本番は datastore。
+	// memory はローカル確認用で、DryRun と併用しないと弾かれる。
+	LedgerBackend LedgerBackend
 }
 
 // 環境変数名。Terraform 側（別リポジトリ）の定義と揃える。
@@ -83,6 +87,22 @@ const (
 	EnvFirestoreNamespace  = "FIRESTORE_NAMESPACE"
 	EnvFirestoreKind       = "FIRESTORE_KIND"
 	EnvLogLevel            = "LOG_LEVEL"
+	EnvLedgerBackend       = "LEDGER_BACKEND"
+)
+
+// LedgerBackend は台帳の実装の選択肢。
+type LedgerBackend string
+
+const (
+	// LedgerDatastore は Firestore (Datastore mode)。本番の既定。
+	LedgerDatastore LedgerBackend = "datastore"
+	// LedgerMemory はプロセス内のインメモリ台帳。
+	//
+	// GCP 認証もエミュレータも無しにローカルで Phase A の挙動（ITANDI から何件
+	// 拾えるか、どの申込が対象になるか）を確認するためのもの。実行が終われば
+	// 消えるので、本番で使うと毎回同じ申込を送り続けてしまう。
+	// そのため DryRun と併用しない限り起動時に弾く。
+	LedgerMemory LedgerBackend = "memory"
 )
 
 // LoadConfig は Loader から設定を読み、検証する。
@@ -109,7 +129,8 @@ func LoadConfig(l *env.Loader) (Config, error) {
 		FirestoreNamespace:  l.String(EnvFirestoreNamespace, "contract-kicker"),
 		FirestoreKind:       l.String(EnvFirestoreKind, ledger.DefaultKind),
 
-		LogLevel: l.String(EnvLogLevel, "info"),
+		LogLevel:      l.String(EnvLogLevel, "info"),
+		LedgerBackend: LedgerBackend(l.String(EnvLedgerBackend, string(LedgerDatastore))),
 	}
 
 	schedule := l.DurationList(EnvRetrySchedule, retry.DefaultSchedule)
@@ -164,6 +185,19 @@ func (c Config) Validate() error {
 	if (c.HerokuAuthHeader == "") != (c.HerokuAuthToken == "") {
 		return fmt.Errorf("config: %s and %s must be set together", EnvHerokuAuthHeader, EnvHerokuAuthToken)
 	}
+
+	switch c.LedgerBackend {
+	case LedgerDatastore:
+	case LedgerMemory:
+		// インメモリ台帳は実行のたびに消えるため、実送信と組み合わせると
+		// 同じ申込を何度も Heroku へ送ってしまう。
+		if !c.DryRun {
+			return fmt.Errorf("config: %s=%s requires %s=true", EnvLedgerBackend, LedgerMemory, EnvDryRun)
+		}
+	default:
+		return fmt.Errorf("config: %s must be %q or %q, got %q",
+			EnvLedgerBackend, LedgerDatastore, LedgerMemory, c.LedgerBackend)
+	}
 	return nil
 }
 
@@ -183,5 +217,6 @@ func (c Config) LogAttrs() []any {
 		"firestoreNamespace", c.FirestoreNamespace,
 		"firestoreKind", c.FirestoreKind,
 		"retrySchedule", fmt.Sprint(c.Backoff.Schedule),
+		"ledgerBackend", string(c.LedgerBackend),
 	}
 }

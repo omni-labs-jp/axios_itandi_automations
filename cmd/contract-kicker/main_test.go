@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"strings"
 	"testing"
 
 	"github.com/omni-labs-jp/axios_itandi_automations/internal/contractkicker"
 	"github.com/omni-labs-jp/axios_itandi_automations/pkg/env"
+	"github.com/omni-labs-jp/axios_itandi_automations/pkg/ledger"
 	"github.com/omni-labs-jp/axios_itandi_automations/pkg/logging"
 	"github.com/omni-labs-jp/axios_itandi_automations/pkg/webhook"
 )
@@ -61,6 +63,32 @@ func TestNewSenderDryRun(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), `"severity":"WARNING"`) {
 		t.Errorf("dry run notice should be a WARNING: %s", buf.String())
+	}
+}
+
+func TestNewStoreMemoryBackend(t *testing.T) {
+	var buf bytes.Buffer
+	log := logging.New(&buf, logging.Options{})
+
+	cfg := loadConfig(t, map[string]string{
+		contractkicker.EnvLedgerBackend: "memory",
+		contractkicker.EnvDryRun:        "true",
+	})
+
+	store, err := newStore(context.Background(), cfg, log)
+	if err != nil {
+		t.Fatalf("newStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if _, ok := store.(*ledger.MemoryStore); !ok {
+		t.Fatalf("store = %T, want *ledger.MemoryStore", store)
+	}
+	if !strings.Contains(buf.String(), "in-memory ledger") {
+		t.Errorf("インメモリ利用は警告として残すべき: %s", buf.String())
+	}
+	if !strings.Contains(buf.String(), `"severity":"WARNING"`) {
+		t.Errorf("severity は WARNING であるべき: %s", buf.String())
 	}
 }
 

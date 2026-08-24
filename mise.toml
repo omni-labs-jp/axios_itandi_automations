@@ -7,8 +7,19 @@ description = "contract-kicker をビルドして bin/ に出力する"
 run = "go build -o bin/contract-kicker ./cmd/contract-kicker"
 
 [tasks.dev-contract-kicker]
-description = "contract-kicker を DRY_RUN でローカル実行する（GCP 認証が必要）"
+description = "contract-kicker を DRY_RUN でローカル実行する（実 Datastore を使うので GCP 認証が必要）"
 run = "DRY_RUN=true go run ./cmd/contract-kicker"
+
+[tasks.local-check]
+description = "GCP に触らずローカルで動作確認する（ITANDI は本物・台帳はインメモリ・Heroku へは送らない）"
+run = """
+: "${ITANDI_API_TOKEN:?ITANDI_API_TOKEN を指定してください}"
+DRY_RUN=true \
+LEDGER_BACKEND=memory \
+HEROKU_WEBHOOK_URL="${HEROKU_WEBHOOK_URL:-https://example.invalid/webhook/itandi/contract}" \
+LOOKBACK_HOURS="${LOOKBACK_HOURS:-24}" \
+go run ./cmd/contract-kicker
+"""
 
 [tasks.fmt]
 description = "フォーマットを適用する"
