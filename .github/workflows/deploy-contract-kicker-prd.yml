@@ -1,0 +1,111 @@
+name: Deploy contract-kicker (prd)
+
+on:
+  push:
+    # 他の自動化を追加してもリリースを独立させられるよう、キッカー専用タグで発火させる
+    tags: ["contract-kicker-v*"]
+  # 初回検証（DRY_RUN）や、タグを打たずに手元から流したいとき用
+  workflow_dispatch:
+    inputs:
+      execute:
+        description: "デプロイ後にジョブを 1 回手動実行する"
+        type: boolean
+        default: false
+
+env:
+  REGION: asia-northeast1
+  REPOSITORY: omni-images
+  IMAGE: contract-kicker
+  JOB_NAME: contract-kicker
+  GCP_PROJECT_ID: omni-property-prd
+  # SA 名は mail-ingestion-job-run-client と同じ命名。ADR-0010 の方針に従い、
+  # ジョブの実行 SA と Scheduler からの呼び出し SA を 1 つで兼ねる
+  SERVICE_ACCOUNT: contract-kicker-run-client@omni-property-prd.iam.gserviceaccount.com
+
+  # ---- Cloud Run Job に渡すアプリ設定 ----
+  # 検証が終わったら false にしてタグを打ち直す（設定変更もレビューを通る）
+  DRY_RUN: "true"
+  # omni-property-prd には Firestore が未作成（Firestore API 自体が未有効）。
+  # 既定 DB を Datastore mode で潰すと property 系が将来 Native mode を
+  # 使えなくなるため、自動化用の named database を作ってそこに載せる。
+  #
+  # 分離は 3 段:  DB(automations) / 名前空間(axios) / Kind(contract_kicker_entries)
+  # 他案件の自動化が増えても名前空間を分ければ同じ DB に相乗りできる。
+  FIRESTORE_DATABASE_ID: automations
+  FIRESTORE_NAMESPACE: axios
+  LOG_LEVEL: info
+  # LOOKBACK_HOURS / MAX_ATTEMPTS / SEND_LIMIT_PER_RUN / REQUEST_TIMEOUT_MS /
+  # TARGET_STATUS_ID / ITANDI_BASE_URL はアプリ側の既定値を使う。
+  # 変えたい場合はここに追記して --set-env-vars へ渡す。
+  # RETRY_SCHEDULE のようにカンマを含む値は --set-env-vars のリスト区切りと衝突するため、
+  # 渡すときは `--set-env-vars="^@^A=1@RETRY_SCHEDULE=15m,1h,4h"` の区切り指定を使う。
+
+jobs:
+  check:
+    uses: ./.github/workflows/ci-check.yml
+    permissions:
+      contents: read
+      pull-requests: write
+
+  deploy:
+    needs: check
+    runs-on: ubuntu-latest
+    environment: prd
+
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY_FOR_GITHUB_ACTIONS_PRD }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
+
+      - name: Resolve image tag
+        id: tag
+        run: |
+          # タグ push ならタグ名、手動実行なら commit SHA
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "value=${{ github.ref_name }}" >> "${GITHUB_OUTPUT}"
+          else
+            echo "value=${{ github.sha }}" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Build and push image
+        run: |
+          IMAGE_URI="${{ env.REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE }}:${{ steps.tag.outputs.value }}"
+          docker build -t "$IMAGE_URI" .
+          docker push "$IMAGE_URI"
+
+      # tasks / parallelism は Cloud Run Jobs の既定値が 1 なので指定しない
+      # （多重起動を防ぐため 1 のままにする）。
+      # max-retries=0 はジョブ自体の自動再実行を止める設定で、個々の申込のリトライは
+      # Datastore 台帳の failed / nextRetryAt が担当する。
+      - name: Deploy Cloud Run Job
+        run: |
+          IMAGE_URI="${{ env.REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE }}:${{ steps.tag.outputs.value }}"
+          gcloud run jobs deploy ${{ env.JOB_NAME }} \
+            --image="$IMAGE_URI" \
+            --region=${{ env.REGION }} \
+            --project=${{ env.GCP_PROJECT_ID }} \
+            --service-account=${{ env.SERVICE_ACCOUNT }} \
+            --set-env-vars="ITANDI_API_TOKEN=${{ secrets.ITANDI_API_TOKEN }},HEROKU_WEBHOOK_URL=${{ secrets.HEROKU_WEBHOOK_URL }},DRY_RUN=${{ env.DRY_RUN }},FIRESTORE_DATABASE_ID=${{ env.FIRESTORE_DATABASE_ID }},FIRESTORE_NAMESPACE=${{ env.FIRESTORE_NAMESPACE }},LOG_LEVEL=${{ env.LOG_LEVEL }}" \
+            --max-retries=0 \
+            --task-timeout=300
+
+      - name: Execute job once
+        if: inputs.execute
+        run: |
+          gcloud run jobs execute ${{ env.JOB_NAME }} \
+            --region=${{ env.REGION }} \
+            --project=${{ env.GCP_PROJECT_ID }} \
+            --wait
+
+      # Cloud SchedulerによるポーリングトリガーはInfrastructure（Terraform）側で管理する
+      # （ADR-0010 の http_target + oauth_token 方式。*/15 * * * *）
