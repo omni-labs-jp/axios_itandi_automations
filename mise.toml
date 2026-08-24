@@ -1,0 +1,34 @@
+[tools]
+go = "1.24.7"
+golangci-lint = "latest"
+
+[tasks.build-contract-kicker]
+description = "contract-kicker をビルドして bin/ に出力する"
+run = "go build -o bin/contract-kicker ./cmd/contract-kicker"
+
+[tasks.dev-contract-kicker]
+description = "contract-kicker を DRY_RUN でローカル実行する（GCP 認証が必要）"
+run = "DRY_RUN=true go run ./cmd/contract-kicker"
+
+[tasks.fmt]
+description = "フォーマットを適用する"
+run = "golangci-lint fmt ./..."
+
+[tasks.lint]
+description = "lint を実行する"
+run = "golangci-lint run ./..."
+
+[tasks.test]
+description = "テストを実行する"
+run = "go test ./..."
+
+[tasks.test-race]
+description = "レース検出付きでテストを実行する"
+run = "go test -race ./..."
+
+[tasks.cover]
+description = "カバレッジを出力する"
+run = '''
+go test -coverprofile=coverage.out -covermode=atomic ./...
+go tool cover -func=coverage.out | tail -n 20
+'''

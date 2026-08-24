@@ -1,0 +1,18 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck      # エラーの握り潰し検出
+    - govet         # 疑わしいコードの静的解析
+    - staticcheck   # 高精度な静的解析
+
+formatters:
+  enable:
+    - gofumpt       # フォーマット（gofmt の厳格版）
+    - goimports     # import の並び順
+
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/omni-labs-jp/axios_itandi_automations
