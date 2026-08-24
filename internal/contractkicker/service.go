@@ -18,7 +18,7 @@ import (
 //
 // interface で切っているのは 2 つの理由から。
 //   - テストで HTTP を立てずに済む（service_test.go の fakeLister）
-//   - ITANDI の IP 許可制が通らず「Heroku 経由で一覧を取る」案に切り替える場合、
+//   - 一覧の取得経路を変える場合（Heroku 経由にする、別 API に移る等）、
 //     この interface の実装を差し替えるだけで Service 側は無変更で済む
 type EntryLister interface {
 	ListEntryHeads(ctx context.Context, p itandi.ListParams) ([]itandi.EntryHead, error)

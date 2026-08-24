@@ -1,8 +1,9 @@
 // Package itandi は ITANDI「申込受付くん」管理会社向け API v2 のクライアント。
 //
-// 認証はトークン方式（Authorization: Token {token}）で、送信元 IP の許可設定が
-// 必要な点に注意（許可外からは 401/403 で弾かれる）。ローカルや Cloud Run から
-// 叩いて 401/403 が返る場合、まず実装バグではなく IP 制限を疑う。
+// 認証はトークン方式（Authorization: Token {token}）。
+// API 仕様上は「許可IPアドレス設定」による送信元制限もあるが、Axios のテナントでは
+// 未使用（2026-08 時点で確認済み）。そのため送信元 IP を固定する必要はなく、
+// Cloud Run から直接叩ける。
 //
 // この API の癖（実装に影響する順）:
 //   - ページング用パラメータが無い。件数は datetime / end_datetime の窓幅でしか
@@ -84,8 +85,8 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("itandi: %s %s: unexpected status %d: %s", e.Method, e.Path, e.StatusCode, body)
 }
 
-// IsUnauthorized は認証・IP 許可の問題らしいかを返す。
-// ITANDI は IP 制限違反も 401/403 で返すため、両者は区別できない。
+// IsUnauthorized は認証まわりの問題らしいかを返す。
+// トークンの誤り・失効が主な原因（IP 許可設定を使い始めた場合もここに来る）。
 func (e *APIError) IsUnauthorized() bool {
 	return e.StatusCode == http.StatusUnauthorized || e.StatusCode == http.StatusForbidden
 }

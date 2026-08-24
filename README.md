@@ -243,10 +243,8 @@ gcloud datastore indexes create deploy/index.yaml \
 
 ## 未対応・注意点
 
-- **ITANDI API は IP 許可制**。VPC / Cloud NAT は使わない構成なので Cloud Run の
-  送信元 IP は固定できない。ITANDI 側で IP 制限が有効だと一覧取得が 401/403 で
-  弾かれるため、事前に確認が必要（弾かれる場合は Heroku 側に一覧取得
-  エンドポイントを足して経由させる案へ切り替える）
+- ITANDI API の「許可IPアドレス設定」は Axios のテナントでは未使用（2026-08 確認）。
+  送信元 IP の固定は不要なので VPC / Cloud NAT も要らない
 - **`/entry_heads` は 1 回で最大 500 件**。ページングパラメータは無いため、
   窓が広くなる初回バックフィルや長期障害復旧時は `LOOKBACK_HOURS` を狭めて
   手動で複数回実行する（自動の期間分割は未実装。上限到達時は WARNING が出る）
