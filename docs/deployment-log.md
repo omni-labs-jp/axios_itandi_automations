@@ -11,10 +11,11 @@
 | 3 | Cloud Run Job の作成 | ✅ 完了（`DRY_RUN=true`） |
 | 4 | Datastore 複合インデックス投入 | ✅ 完了（2件 READY） |
 | 5 | DRY_RUN での動作検証 | ✅ 完了（全経路の疎通確認済み） |
-| 6 | DRY_RUN の副作用修正 | 🔄 PR #3 レビュー中 |
-| 7 | Heroku 側 ITANDI Webhook の二重起動確認 | ⬜ **未対応（要判断）** |
-| 8 | 本稼働（`DRY_RUN=false` + タグ） | ⬜ 未対応 |
-| 9 | Cloud Scheduler の再開 | ⬜ 未対応（現在 PAUSED） |
+| 6 | DRY_RUN の副作用修正 | ✅ 完了（PR #3） |
+| 7 | Heroku 側 ITANDI Webhook の二重起動確認 | ✅ 確認済み（冪等なので問題なし） |
+| 8 | 本稼働（`DRY_RUN=false` + タグ） | 🔄 `DRY_RUN=false` を PR 中。タグ待ち |
+| 9 | 実送信の手動確認（1件） | ⬜ 未対応 |
+| 10 | Cloud Scheduler の再開 | ⬜ 未対応（現在 PAUSED） |
 
 ## 構築済みリソース（omni-property-prd）
 
@@ -112,16 +113,32 @@ detected=11 newlyQueued=11 selected=1 sent=0 dryRun=1
 なおこの検証をきっかけに、DRY_RUN が台帳へ書き込むのは副作用として不適切と判断し、
 PR #3 で「DRY_RUN は台帳を一切変更しない」に変更した。
 
+## 二重起動の検討結果（2026-08-24）
+
+ITANDI 側の Webhook 設定（「申込データ更新時」→ `/webhook/itandi/contract`）が
+有効なままだとキッカーと二重で飛ぶが、**Heroku 側の Drive アップロードが冪等**なので
+問題にならない。001 のドキュメントに明記がある。
+
+> 同一ステータスで複数回Webhookが飛んでも、同名ファイルは `uploadFile()` で
+> スキップされるため多重格納は起きない
+
+> | 4 | 重複防止 | 同じ申込で2回叩く | 2回目は「File already exists on Drive, skipping upload」でスキップ |
+
+したがって ITANDI 側の Webhook 登録を外す作業は本稼働の前提条件にしない。
+（ITANDI に契約検知専用の Webhook 枠は無く、実際に登録されているかは管理画面でしか
+確認できないが、どちらでも安全）
+
 ## 残作業
 
-1. **Heroku 側 ITANDI Webhook の二重起動確認** — 有効なままだとキッカーと二重で走る。
-   Drive が同名スキップで冪等なら許容可だが、ITANDI 側の Webhook 登録を外すかを決める
-2. **PR #3 をマージ**
-3. **本稼働** — ワークフローの `DRY_RUN: "false"` に変更する PR → マージ →
-   タグ `contract-kicker-v1.0.0` を打つ
-4. **Scheduler 再開** — omni-infrastructure の `contract_kicker_schedule_paused = false`
-   にして apply
-5. **数日間の監視** — `gaveup` が出ていないかを日次で確認
+1. **タグ `contract-kicker-v1.0.0` を打つ** — `DRY_RUN=false` のイメージがデプロイされる。
+   この時点では Scheduler が PAUSED なので自動では動かない
+2. **実送信を手動で 1 回確認** — `gcloud run jobs execute`。1 件だけ Heroku に飛ぶので、
+   Heroku 側のログと Drive の格納先（`押印済み` / `契約書類`）を目視確認する。
+   問題があればここで止められる
+3. **Scheduler 再開** — omni-infrastructure の `contract_kicker_schedule_paused = false`
+   にして apply。**この時点から 15 分ごとに動き出し、台帳の 11 件が約 2 時間 45 分で
+   Heroku へ流れる**
+4. **数日間の監視** — `gaveup` が出ていないかを日次で確認
 
 ## 運用コマンド
 
