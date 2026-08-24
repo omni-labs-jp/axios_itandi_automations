@@ -1,0 +1,84 @@
+name: Check
+
+on:
+  workflow_call:
+
+jobs:
+  check:
+    name: Format / Lint / Test
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Install golangci-lint
+        run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b /usr/local/bin latest
+
+      - name: Format check
+        run: |
+          OUTPUT=$(golangci-lint fmt --diff ./... 2>&1)
+          if [ -n "$OUTPUT" ]; then
+            echo "$OUTPUT"
+            echo ""
+            echo "フォーマットが必要なファイルがあります。'mise run fmt' を実行してください。"
+            exit 1
+          fi
+
+      - name: Lint
+        run: golangci-lint run ./...
+
+      # 時刻・台帳・HTTP を差し替えたテストが多く、競合状態の検出価値が高いので -race を付ける
+      - name: Test
+        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Post coverage comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { execSync } = require('child_process')
+            const result = execSync('go tool cover -func=coverage.out').toString()
+            const total = result.match(/total:\s+\(statements\)\s+([\d.]+%)/)?.[1] ?? 'N/A'
+
+            const marker = '<!-- coverage-comment -->'
+            const body = [
+              marker,
+              '## Coverage Report',
+              '```',
+              result.trim(),
+              '```',
+              `**Total: ${total}**`,
+            ].join('\n')
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            })
+
+            const existing = comments.find(c => c.body.includes(marker))
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              })
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              })
+            }

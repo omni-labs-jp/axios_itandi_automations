@@ -1,0 +1,24 @@
+# Firestore (Datastore mode) の複合インデックス。
+# status の等価フィルタ + 別プロパティのソートに必要。
+#
+#   gcloud datastore indexes create deploy/index.yaml \
+#     --project omni-property-prd --database automations
+#
+# 名前空間を使う場合もインデックス定義は共通（名前空間ごとの定義は不要）。
+# 本番は database=automations / namespace=axios に対して作る。
+indexes:
+  # Phase B: pending を detectedAt 昇順で 1 件選ぶ
+  - kind: contract_kicker_entries
+    properties:
+      - name: status
+        direction: asc
+      - name: detectedAt
+        direction: asc
+
+  # Phase B: failed かつ nextRetryAt <= now を nextRetryAt 昇順で選ぶ
+  - kind: contract_kicker_entries
+    properties:
+      - name: status
+        direction: asc
+      - name: nextRetryAt
+        direction: asc
