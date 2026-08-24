@@ -183,8 +183,12 @@ func (s *Service) Detect(ctx context.Context) (DetectResult, error) {
 	}
 
 	res := DetectResult{Detected: len(entries)}
-	// ITANDI は 500 件で黙って打ち切る（エラーにならない）。ちょうど上限なら
-	// 取りこぼしを疑い、LOOKBACK_HOURS を狭めて複数回流す運用判断が必要になる。
+	// ITANDI は 500 件で黙って打ち切る（エラーにならない）。しかも落ちるのは
+	// updated_at が新しい側なので、上限に当たるといちばん拾いたい直近分から
+	// こぼれる。ちょうど上限なら LOOKBACK_HOURS を狭めて複数回流す運用判断が必要。
+	//
+	// 実測（2026-08）では契約(120)は月 15〜30 件程度なので、24 時間窓で上限に
+	// 当たることはまず無い。効いてくるのは長期障害からの復旧時。
 	if len(entries) >= itandi.MaxListResults {
 		res.ListTruncated = true
 		s.log.WarnContext(ctx, "entry head list hit the API result cap; some entries may be missing",

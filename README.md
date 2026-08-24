@@ -245,11 +245,20 @@ gcloud datastore indexes create deploy/index.yaml \
 
 - ITANDI API の「許可IPアドレス設定」は Axios のテナントでは未使用（2026-08 確認）。
   送信元 IP の固定は不要なので VPC / Cloud NAT も要らない
-- **`/entry_heads` は 1 回で最大 500 件**。ページングパラメータは無いため、
-  窓が広くなる初回バックフィルや長期障害復旧時は `LOOKBACK_HOURS` を狭めて
-  手動で複数回実行する（自動の期間分割は未実装。上限到達時は WARNING が出る）
+- **`/entry_heads` は 1 回で最大 500 件**。ページングパラメータは無く、超過分は
+  エラーにならず黙って切り捨てられる。**落ちるのは `updated_at` が新しい側**
+  （実測: 全期間 1091 件に対し古い順の 500 件が返った）なので、上限に当たると
+  いちばん拾いたい直近分からこぼれる。
+  実測で契約(120)は月 15〜30 件程度なので 24 時間窓では起こらないが、長期障害から
+  の復旧時は `LOOKBACK_HOURS` を狭めて手動で複数回実行する
+  （自動の期間分割は未実装。上限到達時は WARNING が出る）
 - **インフラの Terraform は別リポジトリ**（`omni-infrastructure`）。
   Datastore・Artifact Registry・SA/IAM・Scheduler はそちらに追加が必要
   （Cloud Run Job 本体はこのリポジトリの GitHub Actions が作る）
 - 初回リリース時は `DRY_RUN=true` + Scheduler 停止でデプロイし、
-  検知件数と中身を確認してから本稼働へ切り替える
+  検知件数と中身を確認してから本稼働へ切り替える。
+  24 時間窓だと検知 0 件のことが多いので、確認したいときは `LOOKBACK_HOURS` を
+  一時的に広げる（`DRY_RUN` 中は台帳を更新しないので副作用なし）
+- **過去分（契約になって時間が経った申込）は自動的に対象外**。Phase A の窓は
+  `now - LOOKBACK_HOURS` なので、リリース時点で既に契約だった約 1100 件は
+  そもそも検知されない。seed で処理済みにする作業は不要
