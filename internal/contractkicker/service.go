@@ -41,6 +41,8 @@ type Service struct {
 	sender webhook.Sender // Heroku への送信（Phase B）。DRY_RUN 時は DryRunSender
 	clk    clock.Clock    // 取得窓・バックオフの基準時刻。テストで固定できる
 	log    *slog.Logger
+
+	egressIP func(context.Context) (string, error) // 失敗時の診断用。nil なら調べない
 }
 
 // Options は Service の任意依存。
@@ -49,6 +51,11 @@ type Options struct {
 	Clock clock.Clock
 	// Logger は nil で slog.Default()。
 	Logger *slog.Logger
+	// EgressIP は ITANDI が 2xx 以外を返したときに、自分の送信元 IP を調べる関数。
+	// Cloud Run は送信元 IP が固定されず実行ごとに変わり得るため、相手側に
+	// 「どの IP が弾かれたか」を伝えるには失敗した実行の中で調べるしかない。
+	// nil なら調べない。
+	EgressIP func(context.Context) (string, error)
 }
 
 // New は Service を組み立てる。必須依存が nil ならエラー。
@@ -79,7 +86,7 @@ func New(cfg Config, client EntryClient, store ledger.Store, sender webhook.Send
 		log = slog.Default()
 	}
 
-	return &Service{cfg: cfg, client: client, store: store, sender: sender, clk: clk, log: log}, nil
+	return &Service{cfg: cfg, client: client, store: store, sender: sender, clk: clk, log: log, egressIP: opts.EgressIP}, nil
 }
 
 // Summary は 1 実行の結果サマリ。
@@ -141,7 +148,7 @@ func (s *Service) Run(ctx context.Context) (Summary, error) {
 	summary.WouldQueue = detected.WouldQueue
 	summary.ListTruncated = detected.ListTruncated
 	if err != nil {
-		s.log.ErrorContext(ctx, "detect phase failed", "error", err.Error())
+		s.log.ErrorContext(ctx, "detect phase failed", s.errorAttrs(ctx, err)...)
 		errs = append(errs, err)
 	}
 
@@ -281,7 +288,7 @@ func (s *Service) resolveProperty(ctx context.Context, entryID int64, log *slog.
 	detail, err := s.client.GetEntryHead(ctx, entryID)
 	if err != nil {
 		log.WarnContext(ctx, "failed to resolve property name; queueing without it",
-			"error", err.Error())
+			s.errorAttrs(ctx, err)...)
 		return "", ""
 	}
 	return detail.RoomName(), detail.RoomNumber()
@@ -520,4 +527,28 @@ func failureReason(res webhook.Result, err error) string {
 		return err.Error()
 	}
 	return res.Summary()
+}
+
+// errorAttrs はエラーをログ属性へ変換する。
+//
+// ITANDI が 2xx 以外を返した場合は、接続先・リダイレクト経路・応答元の
+// ヘッダ・自分の送信元 IP まで付ける。エラー本文（nginx の 403 HTML など）
+// だけでは「どこで誰に弾かれたか」が分からず、相手側へ問い合わせも
+// できないため。
+func (s *Service) errorAttrs(ctx context.Context, err error) []any {
+	attrs := []any{"error", err.Error()}
+	var apiErr *itandi.APIError
+	if !errors.As(err, &apiErr) {
+		return attrs
+	}
+	attrs = append(attrs, apiErr.LogAttrs()...)
+	if s.egressIP != nil {
+		ip, ipErr := s.egressIP(ctx)
+		if ipErr != nil {
+			attrs = append(attrs, "egressIPError", ipErr.Error())
+		} else {
+			attrs = append(attrs, "egressIP", ip)
+		}
+	}
+	return attrs
 }

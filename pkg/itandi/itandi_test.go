@@ -255,3 +255,62 @@ func TestContextCancellation(t *testing.T) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 }
+
+// 403 の原因切り分けのため、リダイレクト経路・接続先・応答元ヘッダが
+// APIError に残ることを確認する。
+func TestAPIErrorCarriesDiagnostics(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/maintenance_company/api/v2/entry_heads" {
+			http.Redirect(w, r, "/blocked", http.StatusFound)
+			return
+		}
+		w.Header().Set("Server", "nginx")
+		w.Header().Set("X-Amzn-Trace-Id", "Root=1-abc")
+		w.Header().Set("Set-Cookie", "secret=1") // 診断対象外のヘッダは残さない
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("<html>403 Forbidden</html>"))
+	})
+
+	_, err := c.ListEntryHeads(context.Background(), ListParams{StatusIDs: []int{120}})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("err = %v, want *APIError", err)
+	}
+	if !strings.HasSuffix(apiErr.URL, "/blocked") {
+		t.Errorf("URL = %q, want final URL after redirect", apiErr.URL)
+	}
+	if len(apiErr.Redirects) != 1 || !strings.HasPrefix(apiErr.Redirects[0], "302 ") ||
+		!strings.Contains(apiErr.Redirects[0], "/entry_heads?entry_status_ids") {
+		t.Errorf("Redirects = %v", apiErr.Redirects)
+	}
+	if apiErr.RemoteAddr == "" {
+		t.Error("RemoteAddr should be recorded")
+	}
+	if apiErr.Header["Server"] != "nginx" || apiErr.Header["X-Amzn-Trace-Id"] != "Root=1-abc" {
+		t.Errorf("Header = %v", apiErr.Header)
+	}
+	if _, ok := apiErr.Header["Set-Cookie"]; ok {
+		t.Error("non-diagnostic headers must not be kept")
+	}
+	// Error() の書式は従来どおり（既存のアラート・検索条件を壊さない）。
+	if !strings.HasPrefix(apiErr.Error(), "itandi: GET /entry_heads: unexpected status 403") {
+		t.Errorf("Error() = %q", apiErr.Error())
+	}
+}
+
+func TestAPIErrorWithoutRedirect(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	})
+	_, err := c.ListEntryHeads(context.Background(), ListParams{})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("err = %v, want *APIError", err)
+	}
+	if apiErr.Redirects != nil {
+		t.Errorf("Redirects = %v, want nil", apiErr.Redirects)
+	}
+	if !strings.HasSuffix(apiErr.URL, "/maintenance_company/api/v2/entry_heads") {
+		t.Errorf("URL = %q", apiErr.URL)
+	}
+}

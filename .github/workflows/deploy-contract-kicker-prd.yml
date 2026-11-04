@@ -35,6 +35,10 @@ env:
   FIRESTORE_DATABASE_ID: automations
   FIRESTORE_NAMESPACE: axios
   LOG_LEVEL: info
+  # ITANDI が 2xx 以外を返したときだけ送信元 IP を調べてログに残す（診断用）。
+  # Cloud Run は送信元 IP が固定されないため、相手側へ「どの IP が弾かれたか」を
+  # 伝えるにはこれが必要。不要になったら空にする。
+  EGRESS_IP_CHECK_URL: https://api.ipify.org
   # LOOKBACK_HOURS / MAX_ATTEMPTS / SEND_LIMIT_PER_RUN / REQUEST_TIMEOUT_MS /
   # TARGET_STATUS_ID / ITANDI_BASE_URL はアプリ側の既定値を使う。
   # 変えたい場合はここに追記して --set-env-vars へ渡す。
@@ -96,7 +100,7 @@ jobs:
             --region=${{ env.REGION }} \
             --project=${{ env.GCP_PROJECT_ID }} \
             --service-account=${{ env.SERVICE_ACCOUNT }} \
-            --set-env-vars="ITANDI_API_TOKEN=${{ secrets.ITANDI_API_TOKEN }},HEROKU_WEBHOOK_URL=${{ secrets.HEROKU_WEBHOOK_URL }},DRY_RUN=${{ env.DRY_RUN }},FIRESTORE_DATABASE_ID=${{ env.FIRESTORE_DATABASE_ID }},FIRESTORE_NAMESPACE=${{ env.FIRESTORE_NAMESPACE }},LOG_LEVEL=${{ env.LOG_LEVEL }}" \
+            --set-env-vars="ITANDI_API_TOKEN=${{ secrets.ITANDI_API_TOKEN }},HEROKU_WEBHOOK_URL=${{ secrets.HEROKU_WEBHOOK_URL }},DRY_RUN=${{ env.DRY_RUN }},FIRESTORE_DATABASE_ID=${{ env.FIRESTORE_DATABASE_ID }},FIRESTORE_NAMESPACE=${{ env.FIRESTORE_NAMESPACE }},LOG_LEVEL=${{ env.LOG_LEVEL }},EGRESS_IP_CHECK_URL=${{ env.EGRESS_IP_CHECK_URL }}" \
             --max-retries=0 \
             --task-timeout=300
 

@@ -18,10 +18,14 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/omni-labs-jp/axios_itandi_automations/internal/contractkicker"
 	"github.com/omni-labs-jp/axios_itandi_automations/pkg/env"
@@ -81,7 +85,10 @@ func run(ctx context.Context, cfg contractkicker.Config, log *slog.Logger) error
 		return err
 	}
 
-	svc, err := contractkicker.New(cfg, client, store, sender, contractkicker.Options{Logger: log})
+	svc, err := contractkicker.New(cfg, client, store, sender, contractkicker.Options{
+		Logger:   log,
+		EgressIP: egressIPLookup(cfg.EgressIPCheckURL),
+	})
 	if err != nil {
 		return fmt.Errorf("service: %w", err)
 	}
@@ -136,4 +143,32 @@ func newSender(cfg contractkicker.Config, log *slog.Logger) (webhook.Sender, err
 		return nil, fmt.Errorf("heroku webhook client: %w", err)
 	}
 	return client, nil
+}
+
+// egressIPLookup は EGRESS_IP_CHECK_URL から送信元 IP を引く関数を返す。
+// URL が空なら nil（＝調べない）。診断用なので短いタイムアウトで打ち切る。
+func egressIPLookup(checkURL string) func(context.Context) (string, error) {
+	if checkURL == "" {
+		return nil
+	}
+	hc := &http.Client{Timeout: 5 * time.Second}
+	return func(ctx context.Context) (string, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, checkURL, nil)
+		if err != nil {
+			return "", err
+		}
+		res, err := hc.Do(req)
+		if err != nil {
+			return "", err
+		}
+		defer func() { _ = res.Body.Close() }()
+		body, err := io.ReadAll(io.LimitReader(res.Body, 256))
+		if err != nil {
+			return "", err
+		}
+		if res.StatusCode != http.StatusOK {
+			return "", fmt.Errorf("egress ip check: unexpected status %d", res.StatusCode)
+		}
+		return strings.TrimSpace(string(body)), nil
+	}
 }
