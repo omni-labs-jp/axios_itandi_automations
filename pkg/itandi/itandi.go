@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strconv"
 	"strings"
@@ -116,6 +117,52 @@ type APIError struct {
 	Method     string
 	Path       string
 	Body       string
+
+	// 以下は原因切り分け用の診断情報（Error() には含めず、LogAttrs でログへ出す）。
+	// 「どこへ繋いで、誰が 403 を返したか」をログだけで判断できるようにするため。
+
+	// URL は最終的にレスポンスを返した URL（リダイレクト後）。
+	URL string
+	// Redirects はリダイレクトの経路（"301 https://..." の形式、古い順）。
+	// Go の http.Client は既定で 3xx を自動追従し、別ホストへ飛ぶと
+	// Authorization ヘッダを落とすため、経路が無いと誤診しやすい。
+	Redirects []string
+	// RemoteAddr は実際に TCP 接続した相手（IP:port）。
+	RemoteAddr string
+	// Header はレスポンスヘッダのうち、応答元（nginx / WAF / CDN）の特定に
+	// 効くものだけを抜き出したもの。
+	Header map[string]string
+	// Elapsed はリクエスト開始からレスポンス読了までの時間。
+	Elapsed time.Duration
+}
+
+// diagHeaders は APIError に残すレスポンスヘッダ。
+// 応答元の層（アプリ / nginx / WAF / CDN / LB）を見分けるのに使うものに限る。
+var diagHeaders = []string{
+	"Server", "Content-Type", "Date", "Via",
+	"X-Request-Id", "X-Runtime", // Rails アプリまで届いていれば付く
+	"X-Cache", "X-Amz-Cf-Id", "X-Amz-Cf-Pop", // CloudFront
+	"X-Amzn-Requestid", "X-Amzn-Trace-Id", "X-Amzn-Waf-Action", // ALB / AWS WAF
+	"Cf-Ray", // Cloudflare
+	"Retry-After", "Www-Authenticate",
+}
+
+// LogAttrs は診断情報を slog の属性として返す。
+func (e *APIError) LogAttrs() []any {
+	attrs := []any{
+		"httpStatus", e.StatusCode,
+		"httpMethod", e.Method,
+		"url", e.URL,
+		"remoteAddr", e.RemoteAddr,
+		"elapsedMs", e.Elapsed.Milliseconds(),
+	}
+	if len(e.Redirects) > 0 {
+		attrs = append(attrs, "redirects", e.Redirects)
+	}
+	if len(e.Header) > 0 {
+		attrs = append(attrs, "responseHeaders", e.Header)
+	}
+	return attrs
 }
 
 // Error implements error.
@@ -274,9 +321,20 @@ func (c *Client) do(ctx context.Context, method, path string, q url.Values, dst 
 	req.Header.Set("Authorization", "Token "+c.token)
 	req.Header.Set("Accept", "application/json")
 
+	// 接続先 IP を記録する（リダイレクトがあれば最後の接続先が残る）。
+	var remoteAddr string
+	req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+		GotConn: func(info httptrace.GotConnInfo) {
+			if info.Conn != nil {
+				remoteAddr = info.Conn.RemoteAddr().String()
+			}
+		},
+	}))
+
+	start := time.Now()
 	res, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("itandi: %s %s: %w", method, path, err)
+		return fmt.Errorf("itandi: %s %s (remote %s): %w", method, path, orUnknown(remoteAddr), err)
 	}
 	// 読み切った後の Close エラーは扱いようがないので明示的に捨てる。
 	defer func() { _ = res.Body.Close() }()
@@ -287,10 +345,46 @@ func (c *Client) do(ctx context.Context, method, path string, q url.Values, dst 
 	}
 	// 2xx 以外は本文込みで APIError にする（原因調査は本文を見ないと分からない）。
 	if res.StatusCode < 200 || res.StatusCode > 299 {
-		return &APIError{StatusCode: res.StatusCode, Method: method, Path: path, Body: string(body)}
+		return &APIError{
+			StatusCode: res.StatusCode, Method: method, Path: path, Body: string(body),
+			URL:        res.Request.URL.String(),
+			Redirects:  redirectChain(res),
+			RemoteAddr: remoteAddr,
+			Header:     pickHeaders(res.Header),
+			Elapsed:    time.Since(start),
+		}
 	}
 	if err := json.Unmarshal(body, dst); err != nil {
 		return fmt.Errorf("itandi: %s %s: decode body: %w", method, path, err)
 	}
 	return nil
+}
+
+// redirectChain はレスポンスに至るまでのリダイレクト経路を古い順で返す。
+// net/http は追従したリクエストの Request.Response に直前の 3xx を残すので、
+// それを遡る。リダイレクトが無ければ nil。
+func redirectChain(res *http.Response) []string {
+	var chain []string
+	for r := res.Request; r != nil && r.Response != nil; r = r.Response.Request {
+		prev := r.Response
+		chain = append([]string{fmt.Sprintf("%d %s", prev.StatusCode, prev.Request.URL)}, chain...)
+	}
+	return chain
+}
+
+func pickHeaders(h http.Header) map[string]string {
+	out := map[string]string{}
+	for _, k := range diagHeaders {
+		if v := h.Get(k); v != "" {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+func orUnknown(s string) string {
+	if s == "" {
+		return "unknown"
+	}
+	return s
 }

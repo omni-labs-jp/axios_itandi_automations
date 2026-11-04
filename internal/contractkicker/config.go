@@ -62,6 +62,11 @@ type Config struct {
 	// LogLevel は "debug"/"info"/"warn"/"error"。
 	LogLevel string
 
+	// EgressIPCheckURL は ITANDI 呼び出し失敗時に送信元 IP を調べる URL。
+	// 本文に IP をプレーンテキストで返すもの（例: https://api.ipify.org）。
+	// 空なら調べない。
+	EgressIPCheckURL string
+
 	// LedgerBackend は台帳の実装。本番は datastore。
 	// memory はローカル確認用で、DryRun と併用しないと弾かれる。
 	LedgerBackend LedgerBackend
@@ -88,6 +93,7 @@ const (
 	EnvFirestoreKind       = "FIRESTORE_KIND"
 	EnvLogLevel            = "LOG_LEVEL"
 	EnvLedgerBackend       = "LEDGER_BACKEND"
+	EnvEgressIPCheckURL    = "EGRESS_IP_CHECK_URL"
 )
 
 // LedgerBackend は台帳の実装の選択肢。
@@ -131,6 +137,8 @@ func LoadConfig(l *env.Loader) (Config, error) {
 
 		LogLevel:      l.String(EnvLogLevel, "info"),
 		LedgerBackend: LedgerBackend(l.String(EnvLedgerBackend, string(LedgerDatastore))),
+
+		EgressIPCheckURL: l.String(EnvEgressIPCheckURL, ""),
 	}
 
 	schedule := l.DurationList(EnvRetrySchedule, retry.DefaultSchedule)
@@ -218,5 +226,6 @@ func (c Config) LogAttrs() []any {
 		"firestoreKind", c.FirestoreKind,
 		"retrySchedule", fmt.Sprint(c.Backoff.Schedule),
 		"ledgerBackend", string(c.LedgerBackend),
+		"egressIPCheckURL", c.EgressIPCheckURL,
 	}
 }

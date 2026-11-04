@@ -1042,3 +1042,49 @@ func TestFailureReason(t *testing.T) {
 		})
 	}
 }
+
+// ITANDI が 2xx 以外を返したとき、detect 失敗ログに診断情報と送信元 IP が載る。
+func TestRunLogsITANDIDiagnostics(t *testing.T) {
+	h := newHarness(t, nil)
+	h.client.err = &itandi.APIError{
+		StatusCode: 403, Method: "GET", Path: "/entry_heads", Body: "<html>403</html>",
+		URL:        "https://example.test/maintenance_company/api/v2/entry_heads",
+		RemoteAddr: "35.75.80.170:443",
+		Header:     map[string]string{"Server": "nginx"},
+	}
+	h.svc.egressIP = func(context.Context) (string, error) { return "34.0.0.1", nil }
+
+	if _, err := h.svc.Run(context.Background()); err == nil {
+		t.Fatal("Run should fail")
+	}
+
+	var got map[string]any
+	for _, l := range h.logLines(t) {
+		if l["message"] == "detect phase failed" || l["msg"] == "detect phase failed" {
+			got = l
+		}
+	}
+	if got == nil {
+		t.Fatalf("detect phase failed log not found: %s", h.logs.String())
+	}
+	if got["httpStatus"] != float64(403) || got["remoteAddr"] != "35.75.80.170:443" ||
+		got["egressIP"] != "34.0.0.1" || got["url"] == nil {
+		t.Errorf("diagnostic attrs missing: %v", got)
+	}
+	if hdr, _ := got["responseHeaders"].(map[string]any); hdr["Server"] != "nginx" {
+		t.Errorf("responseHeaders = %v", got["responseHeaders"])
+	}
+}
+
+// API エラー以外（ネットワークエラーなど）では送信元 IP を調べない。
+func TestRunSkipsEgressIPForNonAPIError(t *testing.T) {
+	h := newHarness(t, nil)
+	h.client.err = errors.New("dial tcp: timeout")
+	called := false
+	h.svc.egressIP = func(context.Context) (string, error) { called = true; return "", nil }
+
+	_, _ = h.svc.Run(context.Background())
+	if called {
+		t.Error("egress IP lookup should run only for API errors")
+	}
+}

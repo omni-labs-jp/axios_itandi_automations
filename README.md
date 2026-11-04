@@ -126,6 +126,7 @@ gcloud datastore indexes create deploy/index.yaml
 | `FIRESTORE_KIND` | `contract_kicker_entries` | 台帳の Kind |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `LEDGER_BACKEND` | `datastore` | `memory` でインメモリ台帳（ローカル確認用。`DRY_RUN=true` 必須） |
+| `EGRESS_IP_CHECK_URL` | 空 | ITANDI が 2xx 以外を返したときに送信元 IP を調べる URL（例: `https://api.ipify.org`）。空なら調べない |
 
 設定不備は起動時にまとめて ERROR ログへ出して終了コード 1。
 
