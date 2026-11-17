@@ -281,8 +281,13 @@ gcloud datastore indexes create deploy/index.yaml \
 
 ## 未対応・注意点
 
-- ITANDI API の「許可IPアドレス設定」は Axios のテナントでは未使用（2026-08 確認）。
-  送信元 IP の固定は不要なので VPC / Cloud NAT も要らない
+- **送信元 IP は Cloud NAT の静的 IP に固定している**。2026-08 時点では ITANDI の
+  「許可IPアドレス設定」が未使用で Cloud Run から直接叩けたが、遅くとも 2026-10-18 以降は
+  全実行が `GET /entry_heads` で 403（ITANDI 側のロードバランサが返す HTML）になった。
+  同じキーでも社内端末や Heroku からは 200 になるため、送信元 IP による制限と判断し、
+  ジョブを Direct VPC egress で `omni-infrastructure` の専用サブネットに載せている
+  （ADR-0018）。固定 IP は `terraform output automation_egress_ip` で確認し、
+  ITANDI の許可リストに登録してもらう
 - **`/entry_heads` は 1 回で最大 500 件**。ページングパラメータは無く、超過分は
   エラーにならず黙って切り捨てられる。**落ちるのは `updated_at` が新しい側**
   （実測: 全期間 1091 件に対し古い順の 500 件が返った）なので、上限に当たると
